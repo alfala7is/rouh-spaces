@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  seeker
+  provider
+  operator
+  admin
+}
+
+enum MemberStatus {
+  active
+  invited
+  suspended
+}
+
+enum SourceType {
+  api
+  csv
+  form
+  manual
+}
+
+enum SourceStatus {
+  ok
+  error
+  paused
+}
+
+enum ActionType {
+  contact
+  inquiry
+  hold
+  book
+  intro
+}
+
+enum ActionStatus {
+  pending
+  done
+  refunded
+}
+
+model Space {
+  id         String   @id @default(uuid())
+  name       String
+  template   String?
+  configJson Json?
+  ownerId    String?
+  createdAt  DateTime @default(now())
+
+  members Member[]
+  sources Source[]
+  items   Item[]
+  leads   Lead[]
+  actions Action[]
+  ledger  LedgerEvent[]
+}
+
+model Member {
+  id       String       @id @default(uuid())
+  userId   String
+  spaceId  String
+  role     Role
+  status   MemberStatus @default(active)
+
+  space Space @relation(fields: [spaceId], references: [id])
+
+  @@unique([userId, spaceId])
+  @@index([spaceId])
+}
+
+model Source {
+  id         String       @id @default(uuid())
+  spaceId    String
+  type       SourceType
+  authJson   Json?
+  status     SourceStatus @default(ok)
+  lastSyncAt DateTime?
+
+  space Space @relation(fields: [spaceId], references: [id])
+
+  @@index([spaceId])
+}
+
+model Item {
+  id            String   @id @default(uuid())
+  spaceId       String
+  type          String
+  canonicalJson Json
+  lastSeenAt    DateTime?
+  ttlAt         DateTime?
+
+  space Space @relation(fields: [spaceId], references: [id])
+  leads Lead[]
+  actions Action[]
+
+  @@index([spaceId])
+  @@index([ttlAt])
+}
+
+model Action {
+  id        String       @id @default(uuid())
+  spaceId   String
+  userId    String?
+  itemId    String?
+  type      ActionType
+  status    ActionStatus @default(pending)
+  createdAt DateTime     @default(now())
+
+  space Space @relation(fields: [spaceId], references: [id])
+  item  Item? @relation(fields: [itemId], references: [id])
+
+  @@index([spaceId])
+}
+
+model Lead {
+  id         String   @id @default(uuid())
+  spaceId    String
+  itemId     String
+  providerId String?
+  seekerId   String?
+  qualified  Boolean  @default(false)
+  refunded   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  space Space @relation(fields: [spaceId], references: [id])
+  item  Item  @relation(fields: [itemId], references: [id])
+
+  @@index([spaceId])
+}
+
+model LedgerEvent {
+  id          String   @id @default(uuid())
+  ts          DateTime @default(now())
+  actorId     String?
+  spaceId     String
+  entity      String
+  eventType   String
+  payloadJson Json?
+
+  space Space @relation(fields: [spaceId], references: [id])
+
+  @@index([spaceId])
+}
+
+/// Optional: table used by AI service for embeddings
+model AiEmbedding {
+  id       String  @id @default(uuid())
+  spaceId  String
+  itemId   String?
+  text     String
+  // Prisma does not support vector type directly; use raw SQL migration to add column
+  embeddingBytes Bytes?
+
+  space Space @relation(fields: [spaceId], references: [id])
+  item  Item?  @relation(fields: [itemId], references: [id])
+
+  @@index([spaceId])
+}
+
