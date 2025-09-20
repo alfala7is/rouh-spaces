@@ -2,13 +2,25 @@ FROM postgres:16
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        gnupg wget ca-certificates \
-    && echo "deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
-    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg \
-    && apt-get update \
+        ca-certificates \
     && apt-get install -y --no-install-recommends \
         postgresql-16-postgis-3 \
         postgresql-16-postgis-3-scripts \
-        postgresql-16-pgvector \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pgvector extension
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git build-essential postgresql-server-dev-16 \
+    && git clone --branch v0.5.1 https://github.com/pgvector/pgvector.git \
+    && cd pgvector \
+    && make \
+    && make install \
+    && cd .. \
+    && rm -rf pgvector \
+    && apt-get remove -y git build-essential postgresql-server-dev-16 \
+    && apt-get autoremove -y \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

@@ -33,34 +33,129 @@ enum SourceStatus {
   paused
 }
 
+enum AutonomyLevel {
+  L0  // Suggest only
+  L1  // Suggest + execute with consent (default)
+  L2  // Auto within policy
+  L3  // Operator automations
+}
+
+enum TriggerType {
+  freshness_check
+  hold_expiry
+  price_change
+  provider_response_sla
+  scheduled_task
+  policy_violation
+}
+
+enum TriggerStatus {
+  active
+  paused
+  disabled
+}
+
+enum EscalationStatus {
+  pending
+  assigned
+  in_progress
+  resolved
+  cancelled
+}
+
 enum ActionType {
   contact
   inquiry
   hold
   book
   intro
+  order
+  schedule
+  submit
 }
 
 enum ActionStatus {
   pending
-  done
+  queued
+  executing
+  completed
+  failed
+  cancelled
   refunded
 }
 
-model Space {
-  id         String   @id @default(uuid())
-  name       String
-  template   String?
-  configJson Json?
-  ownerId    String?
-  createdAt  DateTime @default(now())
+enum HandlerType {
+  api
+  webhook
+  email
+  form
+  manual
+}
 
-  members Member[]
-  sources Source[]
-  items   Item[]
-  leads   Lead[]
-  actions Action[]
-  ledger  LedgerEvent[]
+enum ExecutionStatus {
+  queued
+  executing
+  completed
+  failed
+  cancelled
+}
+
+enum ReceiptStatus {
+  pending
+  confirmed
+  cancelled
+  refunded
+}
+
+enum KnowledgeEntryType {
+  fact
+  behavior
+  workflow
+}
+
+model Space {
+  id            String        @id @default(uuid())
+  name          String
+  description   String?
+  template      String?
+  templateId    String?
+  configJson    Json?
+  policyJson    Json?
+  autonomyLevel AutonomyLevel @default(L1)
+  ownerId       String?
+  isActive      Boolean       @default(true)
+  isPublic      Boolean       @default(false)
+  verified      Boolean       @default(false)
+  category      String?
+  tags          String[]      @default([])
+  metadata      Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  members       Member[]
+  sources       Source[]
+  items         Item[]
+  leads         Lead[]
+  actions       Action[]
+  ledger        LedgerEvent[]
+  embeddings    AiEmbedding[]
+  policies      SpacePolicy[]
+  triggers      SpaceTrigger[]
+  proposals     ActionProposal[]
+  escalations   Escalation[]
+  rules         SpaceRule[]
+  profile       ProviderProfile?
+  analytics     SpaceAnalytics[]
+  trainingConversations SpaceTrainingConversation[]
+  knowledgeEntries      SpaceKnowledge[]
+
+  spaceTemplate SpaceTemplate? @relation(fields: [templateId], references: [id])
+
+  @@index([templateId])
+  @@index([autonomyLevel])
+  @@index([isActive])
+  @@index([isPublic])
+  @@index([category])
 }
 
 model Member {
@@ -97,25 +192,34 @@ model Item {
   lastSeenAt    DateTime?
   ttlAt         DateTime?
 
-  space Space @relation(fields: [spaceId], references: [id])
-  leads Lead[]
-  actions Action[]
+  space           Space             @relation(fields: [spaceId], references: [id])
+  leads           Lead[]
+  actions         Action[]
+  embeddings      AiEmbedding[]
+  monitoringTasks MonitoringTask[]
 
   @@index([spaceId])
   @@index([ttlAt])
 }
 
 model Action {
-  id        String       @id @default(uuid())
-  spaceId   String
-  userId    String?
-  itemId    String?
-  type      ActionType
-  status    ActionStatus @default(pending)
-  createdAt DateTime     @default(now())
+  id         String       @id @default(uuid())
+  spaceId    String
+  userId     String?
+  itemId     String?
+  type       ActionType
+  status     ActionStatus @default(pending)
+  parameters Json?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
-  space Space @relation(fields: [spaceId], references: [id])
-  item  Item? @relation(fields: [itemId], references: [id])
+  space            Space              @relation(fields: [spaceId], references: [id])
+  item             Item?              @relation(fields: [itemId], references: [id])
+  executions       ActionExecution[]
+  receipts         Receipt[]
+  acceptedProposal ActionProposal?
+  escalations      Escalation[]
+  monitoringTasks  MonitoringTask[]
 
   @@index([spaceId])
 }
@@ -156,12 +260,436 @@ model AiEmbedding {
   spaceId  String
   itemId   String?
   text     String
-  // Prisma does not support vector type directly; use raw SQL migration to add column
-  embeddingBytes Bytes?
+  // OpenAI text-embedding-3-small produces 1536-dimensional vectors as JSON array string
+  embedding String?
+  createdAt DateTime @default(now())
 
   space Space @relation(fields: [spaceId], references: [id])
   item  Item?  @relation(fields: [itemId], references: [id])
 
-  @@index([spaceId])
+  @@index([spaceId, createdAt])
 }
 
+/// Action execution tracking for the execution engine
+model ActionExecution {
+  id             String          @id @default(uuid())
+  actionId       String
+  handlerType    HandlerType
+  handlerName    String
+  status         ExecutionStatus @default(queued)
+  attempt        Int             @default(1)
+  maxAttempts    Int             @default(3)
+  executedAt     DateTime?
+  completedAt    DateTime?
+  failedAt       DateTime?
+  nextRetryAt    DateTime?
+  errorMessage   String?
+  externalRef    String?
+  externalData   Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  action Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+
+  @@index([actionId])
+  @@index([status])
+  @@index([nextRetryAt])
+}
+
+/// Provider system handlers configuration
+model Handler {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  type        HandlerType
+  description String?
+  configJson  Json
+  isActive    Boolean     @default(true)
+  priority    Int         @default(100)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+}
+
+/// Receipts for completed actions
+model Receipt {
+  id               String        @id @default(uuid())
+  actionId         String
+  receiptNumber    String        @unique
+  status           ReceiptStatus @default(pending)
+  data             Json
+  externalProof    Json?
+  providerName     String?
+  totalAmount      Decimal?
+  currency         String?
+  externalRef      String?
+  confirmedAt      DateTime?
+  cancelledAt      DateTime?
+  refundedAt       DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  action Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+
+  @@index([actionId])
+  @@index([receiptNumber])
+  @@index([status])
+}
+
+/// Real-time status updates for actions
+model ActionStatusUpdate {
+  id        String   @id @default(uuid())
+  actionId  String
+  status    String
+  message   String?
+  data      Json?
+  timestamp DateTime @default(now())
+
+  @@index([actionId])
+  @@index([timestamp])
+}
+
+/// Space templates for domain-specific configurations
+model SpaceTemplate {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  domain      String   // e.g., "shop", "travel", "school", "expert"
+  description String
+  schemaJson  Json     // Domain-specific schema definition
+  configJson  Json     // Default configuration
+  policyJson  Json     // Default policies
+  isActive    Boolean  @default(true)
+  version     String   @default("1.0")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  spaces Space[]
+
+  @@index([domain])
+  @@index([isActive])
+}
+
+/// Space-specific policies for autonomy and consent
+model SpacePolicy {
+  id           String   @id @default(uuid())
+  spaceId      String
+  name         String
+  description  String?
+  actionTypes  String[] // Which action types this policy applies to
+  conditions   Json     // Policy conditions (JSONPath expressions)
+  constraints  Json     // Execution constraints
+  isActive     Boolean  @default(true)
+  priority     Int      @default(100)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId])
+  @@index([isActive])
+  @@index([priority])
+}
+
+/// Triggers for automated monitoring and actions
+model SpaceTrigger {
+  id            String        @id @default(uuid())
+  spaceId       String
+  name          String
+  description   String?
+  type          TriggerType
+  status        TriggerStatus @default(active)
+  schedule      String?       // Cron expression for scheduled triggers
+  conditions    Json          // Trigger conditions
+  actions       Json          // Actions to execute when triggered
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  runCount      Int           @default(0)
+  errorCount    Int           @default(0)
+  lastError     String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId])
+  @@index([type])
+  @@index([status])
+  @@index([nextRunAt])
+}
+
+/// Action proposals generated by the Propose verb
+model ActionProposal {
+  id               String   @id @default(uuid())
+  spaceId          String
+  userId           String?
+  itemIds          String[] // Array of related item IDs
+  proposedActions  Json     // Array of proposed action options
+  reasoning        Json     // Explanation of why these options were proposed
+  confidence       Float    @default(0.8)
+  freshness        Float    @default(1.0)
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  rejectedAt       DateTime?
+  acceptedActionId String?   @unique // If user accepted, which action was created
+  createdAt        DateTime @default(now())
+
+  space         Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  acceptedAction Action? @relation(fields: [acceptedActionId], references: [id])
+
+  @@index([spaceId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([createdAt])
+}
+
+/// Escalations for human operator intervention
+model Escalation {
+  id            String           @id @default(uuid())
+  spaceId       String
+  triggeredBy   String?          // User or system that triggered escalation
+  actionId      String?          // Related action if applicable
+  type          String           // Type of escalation (timeout, error, policy_violation, etc.)
+  priority      Int              @default(100)
+  status        EscalationStatus @default(pending)
+  title         String
+  description   String
+  context       Json?            // Additional context data
+  assignedTo    String?          // Operator user ID
+  assignedAt    DateTime?
+  resolvedAt    DateTime?
+  resolution    String?          // How it was resolved
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  space  Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  action Action? @relation(fields: [actionId], references: [id])
+
+  @@index([spaceId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([createdAt])
+}
+
+/// Monitoring tasks for the Monitor verb
+model MonitoringTask {
+  id          String   @id @default(uuid())
+  spaceId     String
+  actionId    String?
+  itemId      String?
+  type        String   // e.g., "hold_expiry", "price_change", "provider_response"
+  parameters  Json     // Monitoring parameters
+  isActive    Boolean  @default(true)
+  lastCheck   DateTime?
+  nextCheck   DateTime
+  checkCount  Int      @default(0)
+  alertCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  action Action? @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  item   Item?   @relation(fields: [itemId], references: [id])
+
+  @@index([spaceId])
+  @@index([actionId])
+  @@index([itemId])
+  @@index([type])
+  @@index([isActive])
+  @@index([nextCheck])
+}
+
+/// Provider profile for Space creators/owners
+model ProviderProfile {
+  id            String   @id @default(uuid())
+  spaceId       String   @unique
+  businessName  String
+  contactName   String?
+  email         String?
+  phone         String?
+  website       String?
+  address       Json?    // Structured address
+  hours         Json?    // Operating hours
+  credentials   Json?    // Certifications, licenses, etc.
+  bio           String?  // Provider description
+  avatar        String?  // Profile image URL
+  cover         String?  // Cover image URL
+  socialLinks   Json?    // Social media links
+  verificationData Json? // Documents for verification
+  responseTime  Int?     // Average response time in minutes
+  rating        Float?   // Average rating
+  reviewCount   Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([businessName])
+  @@index([email])
+  @@index([rating])
+}
+
+/// Knowledge rules and decision logic for Spaces
+model SpaceRule {
+  id           String   @id @default(uuid())
+  spaceId      String
+  name         String
+  description  String?
+  category     String   // e.g., "faq", "decision", "routing", "constraint"
+  conditions   Json     // When this rule applies
+  responses    Json     // What to do/say when rule matches
+  priority     Int      @default(100)
+  isActive     Boolean  @default(true)
+  usageCount   Int      @default(0)
+  lastUsedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId])
+  @@index([category])
+  @@index([isActive])
+  @@index([priority])
+}
+
+/// Analytics and metrics for Spaces
+model SpaceAnalytics {
+  id               String   @id @default(uuid())
+  spaceId          String
+  date             DateTime // Daily aggregation
+  viewCount        Int      @default(0)
+  interactionCount Int      @default(0)
+  actionCount      Int      @default(0)
+  completionRate   Float    @default(0)
+  responseTime     Float    @default(0) // Average in minutes
+  rating           Float    @default(0)
+  revenue          Decimal? // If applicable
+  createdAt        DateTime @default(now())
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@unique([spaceId, date])
+  @@index([spaceId])
+  @@index([date])
+}
+
+/// Integration configurations for external services
+model Integration {
+  id           String   @id @default(uuid())
+  spaceId      String
+  provider     String   // e.g., "square", "calendly", "gmail"
+  type         String   // e.g., "pos", "calendar", "email"
+  config       Json     // Provider-specific configuration
+  credentials  Json?    // Encrypted credentials
+  isActive     Boolean  @default(true)
+  lastSyncAt   DateTime?
+  syncStatus   String?  // "ok", "error", "warning"
+  errorMessage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([spaceId])
+  @@index([provider])
+  @@index([type])
+  @@index([isActive])
+}
+
+/// Reviews and ratings for Spaces
+model SpaceReview {
+  id        String   @id @default(uuid())
+  spaceId   String
+  userId    String
+  rating    Int      // 1-5 stars
+  comment   String?
+  actionId  String?  // Related action if applicable
+  isPublic  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([spaceId, userId]) // One review per user per space
+  @@index([spaceId])
+  @@index([rating])
+  @@index([createdAt])
+}
+
+/// User accounts and authentication
+model User {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  name        String?
+  hashedPassword String
+  role        Role      @default(seeker)
+  isActive    Boolean   @default(true)
+  verified    Boolean   @default(false)
+  verifyToken String?   @unique
+  resetToken  String?   @unique
+  resetTokenExpiry DateTime?
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  sessions    UserSession[]
+
+  @@index([email])
+  @@index([role])
+  @@index([isActive])
+  @@index([verified])
+}
+
+/// User sessions for authentication
+model UserSession {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+/// Training conversations for configuring Space AI behavior
+model SpaceTrainingConversation {
+  id        String   @id @default(uuid())
+  spaceId   String
+  role      String   // "user" or "assistant"
+  content   String
+  metadata  Json?    // extracted patterns, intents, etc.
+  sequence  Int      // order in conversation
+  sessionId String   // group related messages in training session
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId])
+  @@index([sessionId])
+  @@index([sequence])
+  @@index([isActive])
+}
+
+model SpaceKnowledge {
+  id             String              @id @default(uuid())
+  spaceId        String
+  type           KnowledgeEntryType
+  title          String
+  canonicalText  String
+  sourceMessageId String?
+  metadata       Json?
+  tags           String[]            @default([])
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId, type])
+  @@index([spaceId, createdAt])
+}

@@ -9,7 +9,8 @@ async function main() {
   const run = (sql) => client.query(sql).catch((e) => console.error(e.message));
 
   await run(`CREATE EXTENSION IF NOT EXISTS postgis;`);
-  await run(`CREATE EXTENSION IF NOT EXISTS vector;`);
+  // Skip vector extension for now due to installation issues
+  // await run(`CREATE EXTENSION IF NOT EXISTS vector;`);
   await run(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
 
   await run(`
@@ -24,13 +25,13 @@ async function main() {
   `);
 
   const policies = [
-    { table: 'Member', column: 'spaceId' },
-    { table: 'Source', column: 'spaceId' },
-    { table: 'Item', column: 'spaceId' },
-    { table: 'Action', column: 'spaceId' },
-    { table: 'Lead', column: 'spaceId' },
-    { table: 'LedgerEvent', column: 'spaceId' },
-    { table: 'AiEmbedding', column: 'spaceId' },
+    { table: 'Member', column: '"spaceId"' },
+    { table: 'Source', column: '"spaceId"' },
+    { table: 'Item', column: '"spaceId"' },
+    { table: 'Action', column: '"spaceId"' },
+    { table: 'Lead', column: '"spaceId"' },
+    { table: 'LedgerEvent', column: '"spaceId"' },
+    { table: 'AiEmbedding', column: '"spaceId"' },
   ];
   for (const { table, column } of policies) {
     await run(`ALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;`);
@@ -74,7 +75,8 @@ async function main() {
     END $$;
   `);
 
-  // Vector column on AiEmbedding
+  // Vector column on AiEmbedding - commented out until vector extension is fixed
+  /*
   await run(`
     DO $$
     BEGIN
@@ -88,6 +90,7 @@ async function main() {
       END IF;
     END $$;
   `);
+  */
 
   await client.end();
   console.log('RLS and extensions ensured.');

@@ -6,8 +6,21 @@ export async function apiFetch(path: string, init: RequestInit & { spaceId?: str
   const userId = (init as any).userId || 'web-user';
   if (spaceId) headers.set('x-space-id', spaceId);
   headers.set('x-user-id', userId);
-  const res = await fetch(`${API_URL}${path}`, { ...init, headers });
-  if (!res.ok) throw new Error(`API ${res.status}`);
-  return res.json();
+
+  const url = `${API_URL}${path}`;
+  console.log('API Request:', url, init.method || 'GET');
+
+  const res = await fetch(url, { ...init, headers });
+  console.log('API Response:', res.status, res.statusText);
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    console.error('API Error:', res.status, errorText);
+    throw new Error(`API ${res.status}: ${errorText}`);
+  }
+
+  const data = await res.json();
+  console.log('API Data:', path, data);
+  return data;
 }
 

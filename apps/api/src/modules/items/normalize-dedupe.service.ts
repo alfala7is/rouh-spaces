@@ -32,7 +32,7 @@ export class NormalizeDedupeService {
     const ttlAt = json?.ttl_days ? new Date(now.getTime() + Number(json.ttl_days) * 86400000) : null;
 
     if (existing) {
-      const merged = this.mergeCanonical(existing.canonical_json as any, json);
+      const merged = this.mergeCanonical((existing.canonicalJson as any) ?? (existing.canonical_json as any), json);
       return tx.item.update({
         where: { id: existing.id },
         data: {

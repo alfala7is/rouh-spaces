@@ -1,9 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(git remote add:*)",
+      "Bash(pnpm prisma:*)",
+      "Bash(curl:*)",
+      "Bash(npx ts-node:*)",
+      "WebSearch",
+      "Bash(/usr/bin/python3 -m pip install greenlet)",
+      "Bash(npx prisma migrate dev:*)",
+      "Bash(psql:*)",
+      "Read(//Users/humaid/Desktop/**)",
+      "Bash(pnpm run:*)",
+      "WebFetch(domain:arxiv.org)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "outputStyle": "default"
 }

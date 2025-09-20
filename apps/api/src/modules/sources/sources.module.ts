@@ -12,7 +12,8 @@ import { IngestQueue } from '../../queues/ingest.queue';
 export class SourcesModule implements OnModuleInit {
   constructor(private readonly ingest: IngestQueue) {}
   async onModuleInit() {
-    await this.ingest.startWorker();
+    // Skip Redis queue for now - Redis server not available
+    // await this.ingest.startWorker();
   }
 }
 

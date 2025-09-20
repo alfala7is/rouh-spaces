@@ -2,7 +2,9 @@ import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { PrismaService } from '../prisma.service';
 
-const connection = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379');
+const connection = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
+  maxRetriesPerRequest: null,
+});
 
 export type IngestJob = { spaceId: string; sourceId: string; kind: 'csv-poll'; payload?: any };
 
@@ -25,7 +27,6 @@ export class IngestQueue {
           const rows: any[] = payload?.rows || [];
           await this.prisma.withSpaceTx(spaceId, async (tx) => {
             for (const r of rows) {
-              await tx.$executeRawUnsafe(`SELECT set_config('app.space_id', '${spaceId}', true)`);
               await tx.item.create({
                 data: {
                   spaceId,

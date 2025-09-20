@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './modules/app.module';
-import * as cookieParser from 'cookie-parser';
+import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import { execSync } from 'node:child_process';
 
@@ -19,12 +19,18 @@ async function bootstrap() {
   );
 
   const port = Number(process.env.API_PORT || 3001);
-  try {
-    execSync('pnpm prisma migrate deploy', { stdio: 'inherit', cwd: process.cwd() });
-    execSync('pnpm prisma generate', { stdio: 'inherit', cwd: process.cwd() });
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('Prisma migrate/generate skipped:', (e as any).message);
+
+  // Only run prisma commands in production or when explicitly requested
+  if (process.env.NODE_ENV === 'production' || process.env.FORCE_DB_SETUP === 'true') {
+    try {
+      execSync('pnpm prisma migrate deploy', { stdio: 'inherit', cwd: process.cwd() });
+      execSync('pnpm prisma generate', { stdio: 'inherit', cwd: process.cwd() });
+      // Ensure DB extensions, indexes, and RLS policies exist
+      execSync('node ./scripts/setup-rls.cjs', { stdio: 'inherit', cwd: process.cwd() });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('Prisma migrate/generate skipped:', (e as any).message);
+    }
   }
   await app.listen(port);
   // eslint-disable-next-line no-console

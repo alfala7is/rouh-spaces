@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
-import { Button, Card, Input } from '@rouh/ui/src';
+import { Button, Card, Input } from '@rouh/ui';
 
 export default function OperatorConsole() {
   const params = useParams<{ spaceId: string }>();
@@ -51,10 +51,9 @@ export default function OperatorConsole() {
           <div className="text-sm text-zinc-600">CSV Source: {sourceId || 'creating...'}</div>
           <Button onClick={syncCsv} disabled={!sourceId}>Sync now</Button>
         </div>
-        <textarea className="w-full h-40 border rounded p-2 text-sm" value={csv} onChange={(e) => setCsv(e.target.value)} />
+        <textarea className="w-full h-40 border rounded p-2 text-sm" value={csv} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setCsv(e.target.value)} />
         {status && <div className="text-green-700 text-sm">{status}</div>}
       </Card>
     </main>
   );
 }
-
