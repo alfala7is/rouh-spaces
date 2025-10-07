@@ -92,11 +92,6 @@ export class SpacesController {
     return this.spaces.getAnalytics(id);
   }
 
-  @Post(':id/test')
-  async testSpace(@Param('id') id: string, @Body() testInput: { message: string; systemPrompt?: string }) {
-    return this.spaces.testSpace(id, testInput.message, testInput.systemPrompt);
-  }
-
   @Post(':id/training/start')
   async startTraining(@Param('id') id: string) {
     console.log('Starting training session for space:', id);

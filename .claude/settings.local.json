@@ -12,7 +12,9 @@
       "Bash(psql:*)",
       "Read(//Users/humaid/Desktop/**)",
       "Bash(pnpm run:*)",
-      "WebFetch(domain:arxiv.org)"
+      "WebFetch(domain:arxiv.org)",
+      "Bash(mkdir:*)",
+      "WebFetch(domain:open.substack.com)"
     ],
     "deny": [],
     "ask": []

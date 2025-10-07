@@ -21,6 +21,6 @@ import { ActionExecutionService } from './execution.service';
     PrismaService,
     EventsGateway,
   ],
-  exports: [HandlerRegistry],
+  exports: [HandlerRegistry, ActionsService],
 })
 export class ActionsModule {}

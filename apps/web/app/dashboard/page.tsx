@@ -7,7 +7,7 @@ import { apiFetch } from '@/lib/api';
 interface Space {
   id: string;
   name: string;
-  description: string;
+  description: string | null;
   category: string;
   isPublic: boolean;
   verified: boolean;
@@ -16,10 +16,12 @@ interface Space {
     businessName: string;
     rating: number;
     reviewCount: number;
+    responseTime?: number;
+    bio?: string;
   } | null;
-  _count: {
-    actions: number;
-    members: number;
+  _count?: {
+    actions?: number;
+    members?: number;
   };
 }
 
@@ -42,36 +44,34 @@ export default function DashboardPage() {
   const loadDashboard = async () => {
     setIsLoading(true);
     try {
-      // Mock data for now - replace with actual API calls
-      setSpaces([
-        {
-          id: '1',
-          name: 'Dr. Smith Medical Advice',
-          description: 'Get expert medical guidance and book consultations',
-          category: 'healthcare',
-          isPublic: true,
-          verified: false,
-          createdAt: '2024-01-15',
-          profile: {
-            businessName: 'Downtown Medical Clinic',
-            rating: 4.8,
-            reviewCount: 127,
-          },
-          _count: {
-            actions: 342,
-            members: 15,
-          },
-        },
-      ]);
+      const response = await apiFetch('/spaces/explore?limit=12', {
+        cache: false,
+        userId: 'dashboard-admin',
+      });
+
+      const fetchedSpaces: Space[] = response?.spaces || [];
+      setSpaces(fetchedSpaces);
+
+      const totalSpaces = typeof response?.total === 'number' ? response.total : fetchedSpaces.length;
+      const totalActions = fetchedSpaces.reduce((sum, space) => sum + (space._count?.actions ?? 0), 0);
+      const ratings = fetchedSpaces
+        .map((space) => (typeof space.profile?.rating === 'number' ? space.profile.rating : null))
+        .filter((rating): rating is number => rating !== null);
+      const avgRating = ratings.length
+        ? Number((ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length).toFixed(1))
+        : 0;
+      const totalReviews = fetchedSpaces.reduce((sum, space) => sum + (space.profile?.reviewCount ?? 0), 0);
 
       setStats({
-        totalSpaces: 3,
-        totalActions: 1247,
-        avgRating: 4.6,
-        totalReviews: 89,
+        totalSpaces,
+        totalActions,
+        avgRating,
+        totalReviews,
       });
     } catch (error) {
       console.error('Failed to load dashboard:', error);
+      setSpaces([]);
+      setStats(null);
     } finally {
       setIsLoading(false);
     }
@@ -218,18 +218,18 @@ export default function DashboardPage() {
                       </span>
                     </div>
 
-                    <p className="text-gray-600 mb-4">{space.description}</p>
+                    <p className="text-gray-600 mb-4">{space.description || 'No description yet.'}</p>
 
                     <div className="flex items-center gap-6 text-sm text-gray-500">
                       <div className="flex items-center gap-1">
                         <span>⚡</span>
-                        <span>{space._count.actions} actions</span>
+                        <span>{space._count?.actions ?? 0} actions</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <span>👥</span>
-                        <span>{space._count.members} members</span>
+                        <span>{space._count?.members ?? 0} members</span>
                       </div>
-                      {space.profile?.rating && (
+                      {typeof space.profile?.rating === 'number' && (
                         <div className="flex items-center gap-1">
                           <span>⭐</span>
                           <span>{space.profile.rating} ({space.profile.reviewCount} reviews)</span>

@@ -148,6 +148,9 @@ model Space {
   analytics     SpaceAnalytics[]
   trainingConversations SpaceTrainingConversation[]
   knowledgeEntries      SpaceKnowledge[]
+  coordinationTemplates CoordinationTemplate[]
+  coordinationRuns      CoordinationRun[]
+  designerSessions      DesignerSession[]
 
   spaceTemplate SpaceTemplate? @relation(fields: [templateId], references: [id])
 
@@ -212,9 +215,11 @@ model Action {
   parameters Json?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
+  coordinationRunId String? // Link to coordination run if part of coordination flow
 
   space            Space              @relation(fields: [spaceId], references: [id])
   item             Item?              @relation(fields: [itemId], references: [id])
+  coordinationRun  CoordinationRun?   @relation(fields: [coordinationRunId], references: [id])
   executions       ActionExecution[]
   receipts         Receipt[]
   acceptedProposal ActionProposal?
@@ -222,6 +227,7 @@ model Action {
   monitoringTasks  MonitoringTask[]
 
   @@index([spaceId])
+  @@index([coordinationRunId])
 }
 
 model Lead {
@@ -692,4 +698,214 @@ model SpaceKnowledge {
 
   @@index([spaceId, type])
   @@index([spaceId, createdAt])
+}
+
+// ============================================================================
+// COORDINATION TEMPLATE MODELS
+// ============================================================================
+
+/// State types for coordination flow phases
+enum CoordinationStateType {
+  collect    // Express phase - collecting initial need/offer details
+  negotiate  // Explore phase - negotiating terms between parties
+  commit     // Commit phase - formal agreement and deposits
+  evidence   // Evidence phase - proof of completion
+  signoff    // Confirm phase - final confirmation and payment
+}
+
+/// Coordination template defining reusable coordination patterns
+model CoordinationTemplate {
+  id          String   @id @default(uuid())
+  spaceId     String
+  name        String
+  description String
+  version     String   @default("1.0")
+  isActive    Boolean  @default(true)
+  schemaJson  Json     // JSON schema defining the 5-state coordination pattern
+  metadata    Json?    // Additional template metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  space           Space                @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  roles           TemplateRole[]
+  states          TemplateState[]
+  slots           TemplateSlot[]
+  coordinationRuns CoordinationRun[]
+  designerSessions DesignerSession[]
+
+  @@unique([spaceId, name, version])
+  @@index([spaceId])
+  @@index([isActive])
+}
+
+/// Participant roles in coordination templates (requester, provider, organizer, etc)
+model TemplateRole {
+  id              String   @id @default(uuid())
+  templateId      String
+  name            String   // e.g., "requester", "provider", "organizer"
+  description     String?
+  minParticipants Int      @default(1)
+  maxParticipants Int?
+  capabilities    String[] // e.g., ["propose", "accept", "pay_deposit", "upload_evidence", "sign_off"]
+  constraints     Json?    // Additional role-specific constraints
+  createdAt       DateTime @default(now())
+
+  template     CoordinationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  participants RunParticipant[]
+
+  @@unique([templateId, name])
+  @@index([templateId])
+}
+
+/// States in a coordination template (Express, Explore, Commit, Evidence, Confirm)
+model TemplateState {
+  id               String                 @id @default(uuid())
+  templateId       String
+  name             String                 // e.g., "express_need", "negotiate_terms", "commit_agreement"
+  type             CoordinationStateType
+  description      String?
+  sequence         Int                    // Order in the flow
+  requiredSlots    String[]              // Slot IDs that must be filled in this state
+  allowedRoles     String[]              // Role names allowed to act in this state
+  transitions      Json                  // Conditions for moving to next state
+  timeoutMinutes   Int?                  // Optional timeout for this state
+  uiHints          Json?                 // UI configuration hints for this state
+  createdAt        DateTime              @default(now())
+
+  template  CoordinationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  runStates RunState[]
+  coordinationRuns CoordinationRun[]
+
+  @@unique([templateId, sequence])
+  @@index([templateId])
+  @@index([type])
+}
+
+/// Data slots that coordination flows collect and produce
+model TemplateSlot {
+  id           String   @id @default(uuid())
+  templateId   String
+  name         String   // e.g., "need_description", "location", "budget", "photos"
+  type         String   // "text", "number", "date", "file", "location", "currency"
+  description  String?
+  required     Boolean  @default(false)
+  defaultValue Json?
+  validation   Json?    // Validation rules (min/max, regex, etc)
+  visibility   String[] // Role names that can see this slot
+  editable     String[] // Role names that can edit this slot
+  createdAt    DateTime @default(now())
+
+  template CoordinationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, name])
+  @@index([templateId])
+}
+
+/// Active coordination instances running from templates
+model CoordinationRun {
+  id             String    @id @default(uuid())
+  spaceId        String
+  templateId     String
+  initiatorId    String    // User who started the coordination
+  currentStateId String?   // Current TemplateState ID
+  status         String    @default("active") // active, completed, cancelled, expired
+  metadata       Json?     // Run-specific metadata
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+  expiresAt      DateTime?
+
+  space        Space                @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  template     CoordinationTemplate @relation(fields: [templateId], references: [id])
+  currentState TemplateState?       @relation(fields: [currentStateId], references: [id])
+  participants RunParticipant[]
+  states       RunState[]
+  actions      Action[]
+  messages     RunMessage[]
+
+  @@index([spaceId])
+  @@index([templateId])
+  @@index([status])
+  @@index([currentStateId])
+}
+
+/// Participants in a coordination run with their assigned roles
+model RunParticipant {
+  id            String    @id @default(uuid())
+  runId         String
+  userId        String?   // Can be null for magic link participants
+  roleId        String
+  magicToken    String?   @unique // Magic link token for role-based access
+  joinedAt      DateTime  @default(now())
+  lastActiveAt  DateTime  @default(now())
+  metadata      Json?     // Participant-specific data
+
+  run  CoordinationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  role TemplateRole    @relation(fields: [roleId], references: [id])
+
+  @@unique([runId, userId, roleId])
+  @@index([runId])
+  @@index([userId])
+  @@index([magicToken])
+}
+
+/// State progression and data for coordination runs
+model RunState {
+  id          String    @id @default(uuid())
+  runId       String
+  stateId     String
+  enteredAt   DateTime  @default(now())
+  exitedAt    DateTime?
+  slotData    Json      @default("{}") // Collected data for this state
+  metadata    Json?     // State-specific metadata
+  actorId     String?   // User who caused state transition
+
+  run   CoordinationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  state TemplateState   @relation(fields: [stateId], references: [id])
+
+  @@index([runId])
+  @@index([stateId])
+}
+
+model DesignerSession {
+  id         String   @id @default(uuid())
+  spaceId    String
+  templateId String?
+  title      String?
+  status     String   @default("draft")
+  lastReply  String?
+  summary    String?
+  ready      Boolean  @default(false)
+  history    Json
+  notes      Json
+  graph      Json
+  followUps  Json
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  space    Space                 @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  template CoordinationTemplate? @relation(fields: [templateId], references: [id])
+
+  @@index([spaceId, updatedAt])
+  @@index([templateId])
+}
+
+/// Messages sent within coordination runs
+model RunMessage {
+  id              String   @id @default(uuid())
+  runId           String
+  participantId   String?  // Null for facilitator messages
+  from            String   // "facilitator", participant name, etc
+  to              String?  // Target participant name or null for broadcast
+  text            String
+  messageType     String   @default("message") // message, action, system
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  readAt          DateTime?
+
+  run CoordinationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@index([participantId])
 }

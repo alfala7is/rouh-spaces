@@ -5,7 +5,7 @@ import MessageBubble from './MessageBubble';
 import SuggestionChips, { Suggestion } from './SuggestionChips';
 import ReceiptCard from './ReceiptCard';
 import { Input, Button, Card } from '@rouh/ui';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, requestBlueprintChat } from '@/lib/api';
 import io from 'socket.io-client';
 
 const socket = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001');
@@ -43,9 +43,14 @@ function useLocalStore(key: string, initial: ChatMessage[]) {
 type Props = {
   spaceId: string;
   initialMode?: 'live' | 'training';
+  coordinationContext?: {
+    runId: string;
+    participantContext: any;
+    currentState: string;
+  } | null;
 };
 
-export default function ChatThread({ spaceId, initialMode = 'training' }: Props) {
+export default function ChatThread({ spaceId, initialMode = 'training', coordinationContext }: Props) {
   const searchParams = useSearchParams();
   const urlMode = searchParams.get('mode') as 'live' | 'training' | null;
   const isOnboarding = searchParams.get('onboarding') === 'true';
@@ -85,6 +90,11 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
   }>>([]);
   const [spaceContext, setSpaceContext] = useState<any>(null);
   const [isLoadingContext, setIsLoadingContext] = useState(false);
+
+  // Coordination mode state
+  const isCoordinationMode = coordinationContext !== null;
+  const [coordinationState, setCoordinationState] = useState(coordinationContext?.currentState || null);
+  const [coordinationParticipants, setCoordinationParticipants] = useState<any[]>([]);
 
   // Create initial welcome message based on mode and onboarding
   const getWelcomeMessage = () => {
@@ -195,9 +205,64 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
       ]);
     };
 
+    // Coordination-specific event handlers
+    const onCoordinationStateChanged = (data: any) => {
+      if (!isCoordinationMode || data.runId !== coordinationContext?.runId) return;
+
+      setCoordinationState(data.newState);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `coord-state-${Date.now()}`,
+          role: 'system',
+          content: `Coordination state changed from ${data.previousState} to ${data.newState}`,
+          ts: Date.now(),
+        },
+      ]);
+    };
+
+    const onCoordinationMessage = (message: any) => {
+      if (!isCoordinationMode || message.runId !== coordinationContext?.runId) return;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: message.id,
+          role: message.messageType === 'user' ? 'user' : 'assistant',
+          content: message.content,
+          ts: new Date(message.timestamp).getTime(),
+        },
+      ]);
+    };
+
+    const onCoordinationParticipantJoined = (data: any) => {
+      if (!isCoordinationMode || data.runId !== coordinationContext?.runId) return;
+
+      setCoordinationParticipants(prev => [...prev, data.participant]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `coord-join-${Date.now()}`,
+          role: 'system',
+          content: `${data.participant.email || 'A participant'} joined as ${data.participant.role}`,
+          ts: Date.now(),
+        },
+      ]);
+    };
+
     socket.on('action.status', onStatus);
     socket.on('action.completed', onCompleted);
     socket.on('connect_error', onError);
+
+    // Coordination event listeners
+    if (isCoordinationMode) {
+      socket.on('coordination.state.changed', onCoordinationStateChanged);
+      socket.on('coordination.message', onCoordinationMessage);
+      socket.on('coordination.participant.added', onCoordinationParticipantJoined);
+
+      // Join coordination run room
+      socket.emit('joinCoordinationRun', { runId: coordinationContext?.runId });
+    }
     socket.on('disconnect', () => {
       setMessages((prev) => [
         ...prev,
@@ -210,6 +275,14 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
       socket.off('action.completed', onCompleted);
       socket.off('connect_error', onError);
       socket.off('disconnect');
+
+      // Coordination event cleanup
+      if (isCoordinationMode) {
+        socket.off('coordination.state.changed', onCoordinationStateChanged);
+        socket.off('coordination.message', onCoordinationMessage);
+        socket.off('coordination.participant.added', onCoordinationParticipantJoined);
+        socket.emit('leaveCoordinationRun', { runId: coordinationContext?.runId });
+      }
     };
   }, [setMessages]);
 
@@ -423,14 +496,7 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
 
   const getContextAwareResponse = async (message: string) => {
     // Simple test request - training examples come from database
-    const response = await apiFetch(`/spaces/${spaceId}/test`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
-      spaceId,
-    });
-
-    return response;
+    return requestBlueprintChat(spaceId, { message });
   };
 
   const onSend = async () => {
@@ -520,12 +586,28 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
         };
         setMessages((prev) => [...prev, userMessage]);
 
-        const response = await getContextAwareResponse(text);
+        let response;
+        if (isCoordinationMode) {
+          // Handle coordination message through coordination API
+          response = await apiFetch(`/coordination/runs/${coordinationContext?.runId}/advance`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: text,
+              messageType: 'user',
+              senderContext: coordinationContext?.participantContext
+            }),
+          });
+        } else {
+          response = await getContextAwareResponse(text);
+        }
 
         const assistantMessage: ChatMessage = {
           id: `asst-${Date.now()}`,
           role: 'assistant',
-          content: response.suggestedResponse?.text || "I'm processing your request. Please wait a moment.",
+          content: isCoordinationMode
+            ? (response.message || "Message sent to coordination.")
+            : (response.suggestedResponse?.text || "I'm processing your request. Please wait a moment."),
           ts: Date.now(),
         };
 
@@ -912,7 +994,7 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
             </button>
           </div>
           <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>{mode === 'live' ? 'Customer-facing chat' : 'AI training session'}</span>
+            <span>{isCoordinationMode ? 'Coordination chat' : mode === 'live' ? 'Customer-facing chat' : 'AI training session'}</span>
             {mode === 'training' && sessionPatterns.length > 0 && (
               <span className="bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full text-xs">
                 {sessionPatterns.length} patterns learned
@@ -1017,8 +1099,11 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
               onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
                 if (e.key === 'Enter' && !e.shiftKey) onSend();
               }}
-              className={`w-full ${mode === 'training' ? 'border-yellow-300 focus:border-yellow-500' : ''}`}
-              disabled={busy}
+              className={`w-full ${
+                isCoordinationMode ? 'border-blue-300 focus:border-blue-500' :
+                mode === 'training' ? 'border-yellow-300 focus:border-yellow-500' : ''
+              }`}
+              disabled={busy || (isCoordinationMode && !coordinationContext?.participantContext)}
             />
           </div>
           {mode === 'training' && (
@@ -1047,10 +1132,13 @@ export default function ChatThread({ spaceId, initialMode = 'training' }: Props)
           )}
           <Button
             onClick={onSend}
-            disabled={busy || !input.trim()}
-            className={mode === 'training' ? 'bg-yellow-600 hover:bg-yellow-700' : ''}
+            disabled={busy || !input.trim() || (isCoordinationMode && !coordinationContext?.participantContext)}
+            className={
+              isCoordinationMode ? 'bg-blue-600 hover:bg-blue-700' :
+              mode === 'training' ? 'bg-yellow-600 hover:bg-yellow-700' : ''
+            }
           >
-            {mode === 'training' ? 'Train' : 'Send'}
+            {isCoordinationMode ? 'Send' : mode === 'training' ? 'Train' : 'Send'}
           </Button>
         </div>
         {mode === 'training' && (

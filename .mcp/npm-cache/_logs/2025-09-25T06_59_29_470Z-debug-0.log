@@ -1,0 +1,91 @@
+0 verbose cli /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@10.9.3
+2 info using node@v22.19.0
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/humaid/Documents/Rouh/.npmrc
+5 silly config load:file:/Users/humaid/.npmrc
+6 silly config load:file:/Users/humaid/.npm-global/etc/npmrc
+7 verbose title npm exec ./.mcp/chrome-devtools-mcp.tgz --help
+8 verbose argv "exec" "--yes" "--" "./.mcp/chrome-devtools-mcp.tgz" "--help"
+9 verbose logfile logs-max:10 dir:/Users/humaid/Documents/Rouh/.mcp/npm-cache/_logs/2025-09-25T06_59_29_470Z-
+10 verbose logfile /Users/humaid/Documents/Rouh/.mcp/npm-cache/_logs/2025-09-25T06_59_29_470Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:2197815296 maxSize:549453824 maxEntrySize:274726912
+13 http fetch GET https://registry.npmjs.org/npm attempt 1 failed with ENOTFOUND
+14 silly packumentCache heap:2197815296 maxSize:549453824 maxEntrySize:274726912
+15 silly packumentCache heap:2197815296 maxSize:549453824 maxEntrySize:274726912
+16 silly idealTree buildDeps
+17 silly fetch manifest chrome-devtools-mcp@file:../../../chrome-devtools-mcp.tgz
+18 silly placeDep ROOT chrome-devtools-mcp@0.2.7 OK for:  want: file:../../../chrome-devtools-mcp.tgz
+19 silly fetch manifest @modelcontextprotocol/sdk@1.18.1
+20 silly packumentCache full:https://registry.npmjs.org/@modelcontextprotocol%2fsdk cache-miss
+21 silly fetch manifest debug@4.4.3
+22 silly packumentCache full:https://registry.npmjs.org/debug cache-miss
+23 silly fetch manifest puppeteer-core@24.22.2
+24 silly packumentCache full:https://registry.npmjs.org/puppeteer-core cache-miss
+25 silly fetch manifest yargs@18.0.0
+26 silly packumentCache full:https://registry.npmjs.org/yargs cache-miss
+27 http fetch GET https://registry.npmjs.org/@modelcontextprotocol%2fsdk attempt 1 failed with ENOTFOUND
+28 http fetch GET https://registry.npmjs.org/debug attempt 1 failed with ENOTFOUND
+29 http fetch GET https://registry.npmjs.org/puppeteer-core attempt 1 failed with ENOTFOUND
+30 http fetch GET https://registry.npmjs.org/yargs attempt 1 failed with ENOTFOUND
+31 http fetch GET https://registry.npmjs.org/npm attempt 2 failed with ENOTFOUND
+32 http fetch GET https://registry.npmjs.org/@modelcontextprotocol%2fsdk attempt 2 failed with ENOTFOUND
+33 http fetch GET https://registry.npmjs.org/debug attempt 2 failed with ENOTFOUND
+34 http fetch GET https://registry.npmjs.org/puppeteer-core attempt 2 failed with ENOTFOUND
+35 http fetch GET https://registry.npmjs.org/yargs attempt 2 failed with ENOTFOUND
+36 http fetch GET https://registry.npmjs.org/npm attempt 3 failed with ENOTFOUND
+37 http fetch GET https://registry.npmjs.org/@modelcontextprotocol%2fsdk attempt 3 failed with ENOTFOUND
+38 http fetch GET https://registry.npmjs.org/debug attempt 3 failed with ENOTFOUND
+39 http fetch GET https://registry.npmjs.org/puppeteer-core attempt 3 failed with ENOTFOUND
+40 http fetch GET https://registry.npmjs.org/yargs attempt 3 failed with ENOTFOUND
+41 silly fetch manifest @modelcontextprotocol/sdk@1.18.1
+42 silly packumentCache full:https://registry.npmjs.org/@modelcontextprotocol%2fsdk cache-miss
+43 http fetch GET https://registry.npmjs.org/@modelcontextprotocol%2fsdk attempt 1 failed with ENOTFOUND
+44 http fetch GET https://registry.npmjs.org/@modelcontextprotocol%2fsdk attempt 2 failed with ENOTFOUND
+45 http fetch GET https://registry.npmjs.org/@modelcontextprotocol%2fsdk attempt 3 failed with ENOTFOUND
+46 silly fetch manifest debug@4.4.3
+47 silly packumentCache full:https://registry.npmjs.org/debug cache-miss
+48 http fetch GET https://registry.npmjs.org/debug attempt 1 failed with ENOTFOUND
+49 http fetch GET https://registry.npmjs.org/debug attempt 2 failed with ENOTFOUND
+50 http fetch GET https://registry.npmjs.org/debug attempt 3 failed with ENOTFOUND
+51 silly fetch manifest puppeteer-core@24.22.2
+52 silly packumentCache full:https://registry.npmjs.org/puppeteer-core cache-miss
+53 http fetch GET https://registry.npmjs.org/puppeteer-core attempt 1 failed with ENOTFOUND
+54 http fetch GET https://registry.npmjs.org/puppeteer-core attempt 2 failed with ENOTFOUND
+55 http fetch GET https://registry.npmjs.org/puppeteer-core attempt 3 failed with ENOTFOUND
+56 silly fetch manifest yargs@18.0.0
+57 silly packumentCache full:https://registry.npmjs.org/yargs cache-miss
+58 http fetch GET https://registry.npmjs.org/yargs attempt 1 failed with ENOTFOUND
+59 http fetch GET https://registry.npmjs.org/yargs attempt 2 failed with ENOTFOUND
+60 http fetch GET https://registry.npmjs.org/yargs attempt 3 failed with ENOTFOUND
+61 silly placeDep node_modules/chrome-devtools-mcp @modelcontextprotocol/sdk@ OK for: chrome-devtools-mcp@0.2.7 want: 1.18.1
+62 silly placeDep node_modules/chrome-devtools-mcp debug@ OK for: chrome-devtools-mcp@0.2.7 want: 4.4.3
+63 silly placeDep node_modules/chrome-devtools-mcp puppeteer-core@ OK for: chrome-devtools-mcp@0.2.7 want: 24.22.2
+64 silly placeDep node_modules/chrome-devtools-mcp yargs@ OK for: chrome-devtools-mcp@0.2.7 want: 18.0.0
+65 verbose type system
+66 verbose stack FetchError: request to https://registry.npmjs.org/@modelcontextprotocol%2fsdk failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org
+66 verbose stack     at ClientRequest.<anonymous> (/usr/local/lib/node_modules/npm/node_modules/minipass-fetch/lib/index.js:130:14)
+66 verbose stack     at ClientRequest.emit (node:events:519:28)
+66 verbose stack     at emitErrorEvent (node:_http_client:105:11)
+66 verbose stack     at _destroy (node:_http_client:898:9)
+66 verbose stack     at onSocketNT (node:_http_client:918:5)
+66 verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:91:21)
+67 error code ENOTFOUND
+68 error syscall getaddrinfo
+69 error errno ENOTFOUND
+70 error network request to https://registry.npmjs.org/@modelcontextprotocol%2fsdk failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org
+71 error network This is a problem related to network connectivity.
+71 error network In most cases you are behind a proxy or have bad network settings.
+71 error network
+71 error network If you are behind a proxy, please make sure that the
+71 error network 'proxy' config is set properly.  See: 'npm help config'
+72 silly unfinished npm timer reify 1758783570479
+73 silly unfinished npm timer reify:loadTrees 1758783570479
+74 verbose cwd /Users/humaid/Documents/Rouh
+75 verbose os Darwin 24.6.0
+76 verbose node v22.19.0
+77 verbose npm  v10.9.3
+78 verbose exit 1
+79 verbose code 1
+80 error A complete log of this run can be found in: /Users/humaid/Documents/Rouh/.mcp/npm-cache/_logs/2025-09-25T06_59_29_470Z-debug-0.log

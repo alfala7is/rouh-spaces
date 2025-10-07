@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Button, Card, Input } from '@rouh/ui';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, requestBlueprintChat, BlueprintChatResponse } from '@/lib/api';
 import RuleEditor from '@/components/RuleEditor';
 
 interface Space {
@@ -43,25 +43,13 @@ interface Space {
   };
 }
 
-interface TestResult {
-  message: string;
-  matchedRule: {
-    name: string;
-    response: any;
-  } | null;
-  suggestedResponse: {
-    text: string;
-    actions: string[];
-  };
-}
-
 export default function SpaceManagePage({ params }: { params: { spaceId: string } }) {
   const router = useRouter();
   const [space, setSpace] = useState<Space | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [testMessage, setTestMessage] = useState('');
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [testResult, setTestResult] = useState<BlueprintChatResponse | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<any>(null);
@@ -75,6 +63,10 @@ export default function SpaceManagePage({ params }: { params: { spaceId: string 
   });
   const [analytics, setAnalytics] = useState<any>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
+
+  const primaryBlueprint = testResult?.suggestedResponse?.blueprintMatches?.[0] || null;
+  const supportingBlueprints = testResult?.suggestedResponse?.blueprintMatches?.slice(1) || [];
+  const runContext = testResult?.runContext;
 
   useEffect(() => {
     loadSpace();
@@ -100,11 +92,8 @@ export default function SpaceManagePage({ params }: { params: { spaceId: string 
 
     setIsTesting(true);
     try {
-      const result = await apiFetch(`/spaces/${params.spaceId}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: testMessage }),
-        spaceId: params.spaceId,
+      const result = await requestBlueprintChat(params.spaceId, {
+        message: testMessage,
       });
       setTestResult(result);
     } catch (error) {
@@ -493,10 +482,46 @@ export default function SpaceManagePage({ params }: { params: { spaceId: string 
                       <p className="text-sm bg-blue-100 rounded p-2 mt-1">{testResult.message}</p>
                     </div>
 
-                    {testResult.matchedRule && (
+                    {primaryBlueprint && (
                       <div>
-                        <label className="text-sm font-medium text-gray-600">Matched Rule:</label>
-                        <p className="text-sm text-green-600">{testResult.matchedRule.name}</p>
+                        <label className="text-sm font-medium text-gray-600">Primary Blueprint Match:</label>
+                        <p className="text-sm text-green-600">{primaryBlueprint.name}</p>
+                        {primaryBlueprint.matchedKeywords.length > 0 && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            Keywords: {primaryBlueprint.matchedKeywords.join(', ')}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {supportingBlueprints.length > 0 && (
+                      <div>
+                        <label className="text-sm font-medium text-gray-600">Other Matches:</label>
+                        <ul className="list-disc pl-5 text-xs text-gray-600">
+                          {supportingBlueprints.map((match) => (
+                            <li key={match.templateId}>{match.name}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {runContext && (
+                      <div className="grid gap-1 text-xs text-gray-600">
+                        <label className="text-sm font-medium text-gray-600 mt-2">Run Context:</label>
+                        <div><span className="font-medium text-gray-700">Status:</span> {runContext.status}</div>
+                        {runContext.currentState && (
+                          <div><span className="font-medium text-gray-700">Current state:</span> {runContext.currentState.name}</div>
+                        )}
+                        {runContext.nextStates.length > 0 && (
+                          <div>
+                            <span className="font-medium text-gray-700">Next steps:</span> {runContext.nextStates.map((state) => state.name).join(', ')}
+                          </div>
+                        )}
+                        {runContext.participants.length > 0 && (
+                          <div>
+                            <span className="font-medium text-gray-700">Participants:</span> {runContext.participants.map((participant) => participant.role).join(', ')}
+                          </div>
+                        )}
                       </div>
                     )}
 

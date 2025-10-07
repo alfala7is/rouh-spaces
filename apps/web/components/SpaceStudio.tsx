@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { apiFetch } from '@/lib/api';
 import SourcesPanel from './studio/SourcesPanel';
 import TrainingChat, {
@@ -9,9 +9,17 @@ import TrainingChat, {
   PendingSuggestion,
 } from './studio/TrainingChat';
 import KnowledgePanel from './studio/KnowledgePanel';
+import CoordinationPanel from './studio/CoordinationPanel';
+import AiChat from './AiChat';
+import ChatButton from './ChatButton';
 
 type Props = {
   spaceId: string;
+  coordinationContext?: {
+    activeTab?: string;
+    templateId?: string;
+    runId?: string;
+  };
 };
 
 type SpaceDetails = {
@@ -29,17 +37,65 @@ type SpaceDetails = {
   };
 };
 
-export default function SpaceStudio({ spaceId }: Props) {
+type CoordinationChatContext = {
+  runId: string;
+  currentState?: string;
+  participant?: {
+    id: string;
+    role: string;
+    userId?: string | null;
+  } | null;
+};
+
+export default function SpaceStudio({ spaceId, coordinationContext }: Props) {
   const [space, setSpace] = useState<SpaceDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [systemPrompt, setSystemPrompt] = useState('');
   const [knowledge, setKnowledge] = useState<KnowledgeEntry[]>([]);
-  const [activePanel, setActivePanel] = useState<'sources' | 'training' | 'knowledge'>('training');
+  const [activePanel, setActivePanel] = useState<'sources' | 'training' | 'knowledge' | 'coordination'>(
+    coordinationContext?.activeTab === 'coordination' ? 'coordination' : 'training'
+  );
   const [pendingSuggestions, setPendingSuggestions] = useState<PendingSuggestion[]>([]);
   const [isTraining, setIsTraining] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [coordinationChatContext, setCoordinationChatContext] = useState<CoordinationChatContext | null>(null);
 
   const desktopTrainingChatRef = useRef<TrainingChatHandle | null>(null);
   const mobileTrainingChatRef = useRef<TrainingChatHandle | null>(null);
+
+  const aiChatCoordinationContext = useMemo(() => {
+    if (!coordinationChatContext?.participant?.id) {
+      return null;
+    }
+
+    return {
+      runId: coordinationChatContext.runId,
+      currentState: coordinationChatContext.currentState || 'Express Need',
+      participantContext: {
+        id: coordinationChatContext.participant.id,
+        role: coordinationChatContext.participant.role,
+        userId: coordinationChatContext.participant.userId,
+      },
+    } as const;
+  }, [coordinationChatContext]);
+
+  const handleAiChatExecuteAction = useCallback(
+    async (itemId: string, actionType: string, parameters: any) => {
+      const payload = {
+        itemId: itemId || `chat-${Date.now()}`,
+        type: actionType,
+        parameters: parameters || {},
+      };
+
+      await apiFetch('/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        spaceId,
+      });
+    },
+    [spaceId]
+  );
 
   const handleDocumentUploaded = useCallback(async (docResult?: DocumentUploadResult) => {
     const isDesktop = typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches;
@@ -110,6 +166,8 @@ export default function SpaceStudio({ spaceId }: Props) {
   useEffect(() => {
     loadSpaceDetails();
     loadKnowledgeEntries();
+    setCoordinationChatContext(null);
+    setIsChatOpen(false);
   }, [spaceId]);
 
   const handleKnowledgeCreatedEntry = useCallback(
@@ -318,10 +376,20 @@ export default function SpaceStudio({ spaceId }: Props) {
           >
             Knowledge
           </button>
+          <button
+            onClick={() => setActivePanel('coordination')}
+            className={`flex-1 px-4 py-3 text-sm font-medium ${
+              activePanel === 'coordination'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-600'
+            }`}
+          >
+            Coordination
+          </button>
         </div>
       </div>
 
-      {/* Desktop layout - three panels */}
+      {/* Desktop layout - four panels */}
       <div className="hidden lg:flex flex-1">
         {/* Sources Panel - Left */}
         <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
@@ -352,8 +420,8 @@ export default function SpaceStudio({ spaceId }: Props) {
           />
         </div>
 
-        {/* Knowledge Panel - Right */}
-        <div className="w-96 bg-gray-50 flex flex-col">
+        {/* Knowledge Panel - Third */}
+        <div className="w-80 bg-gray-50 flex flex-col border-r border-gray-200">
           <div className="px-6 py-4 border-b border-gray-200 bg-white">
             <h2 className="text-lg font-semibold text-gray-900">Knowledge Base</h2>
             <p className="text-sm text-gray-500 mt-1">Accepted facts, behaviors, and workflows</p>
@@ -368,6 +436,20 @@ export default function SpaceStudio({ spaceId }: Props) {
             onSuggestionDismiss={handleSuggestionDismiss}
             onTrain={handleTrainKnowledge}
             isTraining={isTraining}
+          />
+        </div>
+
+        {/* Coordination Panel - Right */}
+        <div className="w-96 bg-white flex flex-col">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-900">Coordination</h2>
+            <p className="text-sm text-gray-500 mt-1">Create and manage coordination runs</p>
+          </div>
+          <CoordinationPanel
+            spaceId={spaceId}
+            initialTemplateId={coordinationContext?.templateId}
+            initialRunId={coordinationContext?.runId}
+            onRunContextUpdate={(context) => setCoordinationChatContext(context)}
           />
         </div>
       </div>
@@ -424,7 +506,30 @@ export default function SpaceStudio({ spaceId }: Props) {
             />
           </div>
         )}
+
+        {activePanel === 'coordination' && (
+          <div className="h-full bg-white flex flex-col">
+            <div className="px-4 py-3 border-b border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900">Coordination</h2>
+              <p className="text-sm text-gray-500 mt-1">Create and manage coordination runs</p>
+            </div>
+            <CoordinationPanel
+              spaceId={spaceId}
+              initialTemplateId={coordinationContext?.templateId}
+              initialRunId={coordinationContext?.runId}
+              onRunContextUpdate={(context) => setCoordinationChatContext(context)}
+            />
+          </div>
+        )}
       </div>
+      <ChatButton onClick={() => setIsChatOpen(true)} />
+      <AiChat
+        spaceId={spaceId}
+        onExecuteAction={handleAiChatExecuteAction}
+        isOpen={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        coordinationContext={aiChatCoordinationContext}
+      />
     </div>
   );
 }

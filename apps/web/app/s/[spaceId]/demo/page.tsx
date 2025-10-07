@@ -465,7 +465,6 @@ export default function DemoSpaces() {
       {/* AI Chat Interface */}
       <AiChat
         spaceId={spaceId}
-        items={Object.values(demoSpaces).map(space => ({ id: space.title, canonicalJson: space.mockItem }))}
         onExecuteAction={(itemId: string, actionType: string, parameters: any) => {
           // Find the mock item data based on itemId
           const matchedSpace = Object.values(demoSpaces).find(space => space.title === itemId);

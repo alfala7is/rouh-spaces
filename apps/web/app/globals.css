@@ -12,3 +12,183 @@ body {
   background: rgb(var(--background));
 }
 
+/* Animated Gradient Blobs */
+@keyframes blob {
+  0% {
+    transform: translate(0px, 0px) scale(1) rotate(0deg);
+  }
+  33% {
+    transform: translate(30px, -50px) scale(1.1) rotate(120deg);
+  }
+  66% {
+    transform: translate(-20px, 20px) scale(0.9) rotate(240deg);
+  }
+  100% {
+    transform: translate(0px, 0px) scale(1) rotate(360deg);
+  }
+}
+
+@keyframes pulse-slow {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-blob {
+  animation: blob 20s ease-in-out infinite;
+}
+
+.animation-delay-2000 {
+  animation-delay: 2s;
+}
+
+.animation-delay-4000 {
+  animation-delay: 4s;
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 8s ease-in-out infinite;
+}
+
+@keyframes flow-right {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.animate-flow-right {
+  animation: flow-right 3s ease-in-out infinite;
+}
+
+/* Chaos animations */
+@keyframes shake-intense {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  25% { transform: translateX(-1px) rotate(-0.3deg); }
+  75% { transform: translateX(1px) rotate(0.3deg); }
+}
+
+.animate-shake-intense {
+  animation: shake-intense 0.3s ease-in-out infinite;
+}
+
+/* Mental burden floating away animations */
+@keyframes float-dissolve-1 {
+  0% {
+    transform: translateY(0) translateX(0) scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-200px) translateX(-30px) scale(0.8);
+    opacity: 0;
+  }
+}
+
+@keyframes float-dissolve-2 {
+  0% {
+    transform: translateY(0) translateX(0) scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-220px) translateX(40px) scale(0.85);
+    opacity: 0;
+  }
+}
+
+@keyframes float-dissolve-3 {
+  0% {
+    transform: translateY(0) translateX(0) scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-190px) translateX(-20px) scale(0.9);
+    opacity: 0;
+  }
+}
+
+@keyframes float-dissolve-4 {
+  0% {
+    transform: translateY(0) translateX(0) scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-210px) translateX(25px) scale(0.82);
+    opacity: 0;
+  }
+}
+
+@keyframes float-dissolve-5 {
+  0% {
+    transform: translateY(0) translateX(0) scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-230px) translateX(-35px) scale(0.88);
+    opacity: 0;
+  }
+}
+
+.animate-float-1 {
+  animation: float-dissolve-1 8s ease-out infinite;
+}
+
+.animate-float-2 {
+  animation: float-dissolve-2 9s ease-out infinite;
+  animation-delay: 0.5s;
+}
+
+.animate-float-3 {
+  animation: float-dissolve-3 8.5s ease-out infinite;
+  animation-delay: 1s;
+}
+
+.animate-float-4 {
+  animation: float-dissolve-4 9.5s ease-out infinite;
+  animation-delay: 1.5s;
+}
+
+.animate-float-5 {
+  animation: float-dissolve-5 8.8s ease-out infinite;
+  animation-delay: 2s;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.8s ease-out forwards;
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+}
+
+.animate-fade-out {
+  animation: fade-out 0.8s ease-out forwards;
+}
+

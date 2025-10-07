@@ -1,4 +1,6 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { PrismaService } from '../prisma.service';
 import { SpaceIdMiddleware } from '../shared/space.middleware';
 import { ItemsModule } from './items/items.module';
@@ -9,11 +11,36 @@ import { EventsGateway } from './events.gateway';
 import { SpacesModule } from './spaces/spaces.module';
 import { AuthModule } from './auth/auth.module';
 import { AiModule } from './ai/ai.module';
+import { TemplatesModule } from './templates/templates.module';
+import { CoordinationModule } from './coordination/coordination.module';
+import { BlueprintsModule } from './blueprints/blueprints.module';
 import { HealthController } from '../health.controller';
 
 @Module({
-  imports: [ItemsModule, SourcesModule, ActionsModule, LedgerModule, SpacesModule, AuthModule, AiModule],
-  providers: [PrismaService, EventsGateway],
+  imports: [
+    ThrottlerModule.forRoot([{
+      ttl: 60000,
+      limit: 100
+    }]),
+    ItemsModule,
+    SourcesModule,
+    ActionsModule,
+    LedgerModule,
+    SpacesModule,
+    AuthModule,
+    AiModule,
+    TemplatesModule,
+    CoordinationModule,
+    BlueprintsModule
+  ],
+  providers: [
+    PrismaService,
+    EventsGateway,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
   controllers: [HealthController],
 })
 export class AppModule implements NestModule {

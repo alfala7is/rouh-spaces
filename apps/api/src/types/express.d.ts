@@ -12,6 +12,14 @@ declare global {
       };
       spaceId?: string;
       roles?: string[];
+      participant?: {
+        id: string;
+        runId: string;
+        userId?: string;
+        roleId?: string;
+        roleName?: string;
+        metadata?: any;
+      };
     }
   }
 }

@@ -165,4 +165,81 @@ export class AiService {
       throw new Error('Failed to analyze training conversation');
     }
   }
+
+  async compileTemplate(description: string, spaceId?: string): Promise<{
+    valid: boolean;
+    template?: any;
+    errors?: string[];
+    rawOutput?: string;
+    confidence?: number;
+  }> {
+    try {
+      console.log(`[AI Service] Sending template compilation request for space ${spaceId}`);
+
+      // Omit space_context for now since we don't have space data available
+      // Could be enhanced to include actual space context from database
+      const request = {
+        description: description,
+        // space_context omitted - will be undefined
+      };
+
+      const response = await axios.post(`${this.aiServiceUrl}/compile-template`, request, {
+        timeout: 60000, // 60 second timeout for LLM operations
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      console.log(`[AI Service] Template compilation response received, valid: ${response.data.valid}`);
+      return response.data;
+    } catch (error: any) {
+      console.error('[AI Service] Template compilation failed:', error);
+
+      if (error.code === 'ECONNREFUSED') {
+        throw new Error('AI service is not available. Please ensure the Python AI service is running.');
+      }
+
+      if (error.response?.status === 402) {
+        throw new Error('OpenAI API quota exceeded. Please check your billing.');
+      }
+
+      if (error.response?.status === 503) {
+        throw new Error('Template compilation service is currently unavailable.');
+      }
+
+      if (error.response?.data?.detail) {
+        throw new Error(error.response.data.detail);
+      }
+
+      if (error.timeout) {
+        throw new Error('Template compilation request timed out. Please try again.');
+      }
+
+      throw new Error(`Template compilation failed: ${error.message || 'Unknown error'}`);
+    }
+  }
+
+  async designerTurn(spaceId: string, payload: {
+    history: Array<{ role: string; content: string }>;
+    notes?: Record<string, any>;
+    graph?: Record<string, any>;
+  }): Promise<any> {
+    try {
+      const response = await axios.post(`${this.aiServiceUrl}/designer/turn`, {
+        space_id: spaceId,
+        history: payload.history,
+        notes: payload.notes,
+        graph: payload.graph,
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Failed to process designer turn:', error);
+      const status = error.response?.status;
+      const detail = error.response?.data?.detail || error.message || 'Failed to process designer turn';
+
+      const wrapped = new Error(detail);
+      (wrapped as any).status = status || (error.code === 'ECONNREFUSED' ? 503 : undefined);
+      throw wrapped;
+    }
+  }
 }

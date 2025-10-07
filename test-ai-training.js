@@ -150,7 +150,7 @@ async function testAITrainingFlow() {
 
     // Step 6: Test the space with a query (if RAG is configured)
     console.log('Step 6: Testing space with a query...');
-    const testRes = await fetch(`${API_URL}/spaces/${space.id}/test`, {
+    const testRes = await fetch(`${API_URL}/spaces/${space.id}/blueprints/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -169,8 +169,13 @@ async function testAITrainingFlow() {
     } else {
       const testResponse = await testRes.json();
       console.log('✅ Test query response received');
-      if (testResponse.response) {
-        console.log(`  AI Response: "${testResponse.response}"`);
+      if (testResponse?.suggestedResponse?.text) {
+        console.log(`  AI Response: "${testResponse.suggestedResponse.text}"`);
+      }
+      if (testResponse?.suggestedResponse?.blueprintMatches?.length) {
+        console.log(
+          `  Blueprint matches: ${testResponse.suggestedResponse.blueprintMatches.map((m) => m.name).join(', ')}`
+        );
       }
       console.log('');
     }

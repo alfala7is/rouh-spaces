@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useRef, useEffect } from 'react';
-import { apiFetch } from '@/lib/api';
+import { requestBlueprintChat } from '@/lib/api';
 import { Input, Button } from '@rouh/ui';
 
 type Message = {
@@ -58,20 +58,19 @@ export default function LiveChat({ spaceId, spaceName, systemPrompt }: Props) {
 
     try {
       // Get AI response using the system prompt directly
-      const response = await apiFetch(`/spaces/${spaceId}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userMessage.content,
-          systemPrompt: systemPrompt, // Pass the system prompt for direct GPT response
-        }),
-        spaceId,
+      const response = await requestBlueprintChat(spaceId, {
+        message: userMessage.content,
+        systemPrompt,
       });
+
+      const content =
+        response.suggestedResponse?.text ||
+        "I'm here to help! Could you please rephrase your question?";
 
       const aiMessage: Message = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        content: response.response || response.text || "I'm here to help! Could you please rephrase your question?",
+        content,
         timestamp: new Date(),
       };
 

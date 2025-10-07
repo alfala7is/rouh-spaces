@@ -38,6 +38,7 @@ export class ActionsService implements OnModuleInit {
       itemId?: string;
       type: 'contact' | 'inquiry' | 'hold' | 'book' | 'intro' | 'order' | 'schedule' | 'submit';
       parameters?: Record<string, any>;
+      coordinationRunId?: string;
     }
   ) {
     this.logger.log(`Creating action of type ${body.type} in space ${spaceId}`);
@@ -68,15 +69,16 @@ export class ActionsService implements OnModuleInit {
         type: body.type,
         status: 'queued',
         parameters: body.parameters || undefined,
+        coordinationRunId: body.coordinationRunId ?? null,
       },
     });
 
     let lead: any = null;
-    if (body.type === 'contact' || body.type === 'inquiry') {
+    if ((body.type === 'contact' || body.type === 'inquiry') && body.itemId) {
       lead = await this.prisma.lead.create({
         data: {
           spaceId,
-          itemId: body.itemId!,
+          itemId: body.itemId,
           providerId: null,
           seekerId: userId ?? null,
           qualified: true,
@@ -96,6 +98,7 @@ export class ActionsService implements OnModuleInit {
           actionId: action.id,
           leadId: lead?.id,
           parameters: body.parameters,
+          coordinationRunId: body.coordinationRunId,
         },
       },
     });

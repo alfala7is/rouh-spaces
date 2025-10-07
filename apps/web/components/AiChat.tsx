@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useRef, useEffect } from 'react';
 import { Button, Card, Input } from '@rouh/ui';
-import { apiFetch } from '@/lib/api';
+import { requestBlueprintChat, type BlueprintMatchSummary, type BlueprintChatResponse } from '@/lib/api';
 
 interface ChatMessage {
   id: string;
@@ -15,28 +15,40 @@ interface ChatMessage {
     title: string;
   }[];
   actionId?: string;
+  blueprintMatches?: BlueprintMatchSummary[];
+  suggestedActions?: string[];
+  runContext?: BlueprintChatResponse['runContext'];
 }
 
 interface AiChatProps {
   spaceId: string;
-  items: any[];
   onExecuteAction: (itemId: string, actionType: string, parameters: any) => Promise<void>;
   isOpen: boolean;
   onClose: () => void;
+  coordinationContext?: {
+    runId: string;
+    participantContext: any;
+    currentState: string;
+  } | null;
 }
 
-export default function AiChat({ spaceId, items, onExecuteAction, isOpen, onClose }: AiChatProps) {
+export default function AiChat({ spaceId, onExecuteAction, isOpen, onClose, coordinationContext }: AiChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
       type: 'ai',
-      content: "Hi! I'm Rouh, your AI assistant. I can help you with actions like ordering food, booking appointments, or contacting services. Just tell me what you need!",
+      content: coordinationContext
+        ? `Hi! I'm helping with this coordination run. Current state: ${coordinationContext.currentState}. How can I assist you?`
+        : "Hi! I'm Rouh, your AI assistant. I can help you with actions like ordering food, booking appointments, or contacting services. Just tell me what you need!",
       timestamp: new Date()
     }
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Coordination mode state
+  const isCoordinationMode = coordinationContext !== null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -65,29 +77,72 @@ export default function AiChat({ spaceId, items, onExecuteAction, isOpen, onClos
     setIsLoading(true);
 
     try {
-      // Call the API to get AI response
-      const response = await apiFetch(`/spaces/${spaceId}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage.content }),
-        spaceId,
-      });
+      let response;
+      if (isCoordinationMode && coordinationContext?.participantContext) {
+        // Handle coordination messages through coordination API with correct payload
+        try {
+          const { advanceCoordinationState } = await import('../lib/coordination-api');
+          response = await advanceCoordinationState(coordinationContext.runId, {
+            participantId: coordinationContext.participantContext.id,
+            slotData: {
+              message: userMessage.content,
+              messageType: 'user'
+            },
+            metadata: { messageContent: userMessage.content }
+          });
+        } catch (error) {
+          console.error('Coordination API error:', error);
+          throw error;
+        }
+      } else {
+        response = await requestBlueprintChat(spaceId, {
+          message: userMessage.content,
+        });
+      }
 
-      const aiResponse: ChatMessage = {
-        id: `ai-${Date.now()}`,
-        type: 'ai',
-        content: response.suggestedResponse?.text || "I'm here to help! What would you like me to assist you with?",
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, aiResponse]);
+      // Only add assistant message if there's meaningful content
+      if (isCoordinationMode) {
+        // Only display a user-visible confirmation when the API returns a meaningful message field
+        if (response?.message || response?.data?.message) {
+          const aiResponse: ChatMessage = {
+            id: `ai-${Date.now()}`,
+            type: 'ai',
+            content: response?.message || response?.data?.message,
+            timestamp: new Date()
+          };
+          setMessages(prev => [...prev, aiResponse]);
+        }
+        // If no meaningful message, skip adding assistant bubble - rely on CoordinationChat + WebSocket updates
+      } else {
+        const aiResponse: ChatMessage = {
+          id: `ai-${Date.now()}`,
+          type: 'ai',
+          content:
+            response.suggestedResponse?.text ||
+            "I'm here to help! What would you like me to assist you with?",
+          timestamp: new Date(),
+          blueprintMatches: response.suggestedResponse?.blueprintMatches,
+          suggestedActions: response.suggestedResponse?.actions || [],
+          runContext: response.runContext,
+        };
+        setMessages(prev => [...prev, aiResponse]);
+      }
     } catch (error) {
       console.error('Failed to get AI response:', error);
 
+      let errorContent;
+      if (isCoordinationMode) {
+        // Use handleCoordinationApiError for coordination mode errors
+        const { handleCoordinationApiError } = await import('../lib/coordination-api');
+        errorContent = handleCoordinationApiError(error);
+      } else {
+        errorContent = "I'm sorry, I'm having trouble processing your request right now. Please try again.";
+      }
+
       const errorResponse: ChatMessage = {
         id: `ai-${Date.now()}`,
-        type: 'ai',
-        content: "I'm sorry, I'm having trouble processing your request right now. Please try again.",
+        type: isCoordinationMode ? 'system' : 'ai',
+        content: errorContent,
         timestamp: new Date()
       };
 
@@ -141,8 +196,10 @@ export default function AiChat({ spaceId, items, onExecuteAction, isOpen, onClos
               <span className="text-white text-sm font-bold">R</span>
             </div>
             <div>
-              <h3 className="font-semibold">Rouh AI Assistant</h3>
-              <p className="text-xs text-gray-500">Natural language actions</p>
+              <h3 className="font-semibold">{isCoordinationMode ? 'Coordination Assistant' : 'Rouh AI Assistant'}</h3>
+              <p className="text-xs text-gray-500">
+                {isCoordinationMode ? `State: ${coordinationContext?.currentState}` : 'Natural language actions'}
+              </p>
             </div>
           </div>
           <Button onClick={onClose} variant="outline" className="h-8 w-8 p-0">
@@ -162,6 +219,78 @@ export default function AiChat({ spaceId, items, onExecuteAction, isOpen, onClos
                   : 'bg-gray-100 text-gray-800'
               }`}>
                 <div className="whitespace-pre-wrap text-sm">{message.content}</div>
+
+                {/* Blueprint Matches */}
+                {message.blueprintMatches && message.blueprintMatches.length > 0 && (
+                  <div className="mt-3 space-y-2 text-xs">
+                    <div className="font-semibold text-gray-700">Blueprint alignment</div>
+                    {message.blueprintMatches.slice(0, 3).map((match, index) => (
+                      <div key={`${match.templateId}-${index}`} className="rounded border border-gray-200 bg-white/80 p-3 text-gray-700">
+                        <div className="flex items-center justify-between font-medium text-sm text-gray-900">
+                          <span>#{index + 1} {match.name}</span>
+                          {typeof match.score === 'number' && (
+                            <span className="text-xs text-gray-500">score {Math.round(match.score)}</span>
+                          )}
+                        </div>
+                        {match.description && (
+                          <p className="mt-1 text-xs text-gray-600">{match.description}</p>
+                        )}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {match.category && (
+                            <span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700">{match.category}</span>
+                          )}
+                          {match.matchedKeywords?.slice(0, 4).map((keyword) => (
+                            <span key={keyword} className="rounded-full bg-purple-50 px-2 py-1 text-[10px] font-medium text-purple-700">
+                              {keyword}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Run Context */}
+                {message.runContext && (
+                  <div className="mt-3 rounded border border-gray-200 bg-white/80 p-3 text-xs text-gray-700">
+                    <div className="font-semibold text-gray-800 mb-1">Run context</div>
+                    <div className="grid gap-1">
+                      <div><span className="font-medium">Status:</span> {message.runContext.status}</div>
+                      {message.runContext.currentState && (
+                        <div>
+                          <span className="font-medium">Current state:</span> {message.runContext.currentState.name}
+                        </div>
+                      )}
+                      {message.runContext.nextStates.length > 0 && (
+                        <div>
+                          <span className="font-medium">Next:</span> {message.runContext.nextStates.map((state) => state.name).join(', ')}
+                        </div>
+                      )}
+                      {message.runContext.participants.length > 0 && (
+                        <div>
+                          <span className="font-medium">Participants:</span> {message.runContext.participants.map((p) => p.role).join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Suggested follow-up actions */}
+                {message.suggestedActions && message.suggestedActions.length > 0 && (
+                  <div className="mt-3 text-xs">
+                    <div className="font-semibold text-gray-700 mb-1">Suggested follow-ups</div>
+                    <div className="flex flex-wrap gap-2">
+                      {message.suggestedActions.map((action) => (
+                        <span
+                          key={action}
+                          className="rounded-full bg-gray-200/70 px-3 py-1 text-[11px] text-gray-700"
+                        >
+                          {action}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Action Buttons */}
                 {message.actions && (
@@ -211,20 +340,31 @@ export default function AiChat({ spaceId, items, onExecuteAction, isOpen, onClos
               value={inputValue}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Tell me what you need... (e.g., 'Order a latte with oat milk')"
+              placeholder={isCoordinationMode
+                ? "Share your thoughts on this coordination..."
+                : "Tell me what you need... (e.g., 'Order a latte with oat milk')"
+              }
               className="flex-1"
-              disabled={isLoading}
+              disabled={isLoading || (isCoordinationMode && !coordinationContext?.participantContext)}
             />
             <Button
               onClick={handleSendMessage}
-              disabled={!inputValue.trim() || isLoading}
-              className="bg-blue-600 hover:bg-blue-700"
+              disabled={!inputValue.trim() || isLoading || (isCoordinationMode && !coordinationContext?.participantContext)}
+              className={isCoordinationMode ? "bg-green-600 hover:bg-green-700" : "bg-blue-600 hover:bg-blue-700"}
             >
               Send
             </Button>
           </div>
           <div className="text-xs text-gray-500 mt-2">
-            💡 Try: "Order coffee", "Schedule meeting", "Book test drive", or "Contact expert"
+            {isCoordinationMode ? (
+              coordinationContext?.participantContext ? (
+                `💬 Contributing as ${coordinationContext.participantContext.role} in ${coordinationContext.currentState} state`
+              ) : (
+                "⚠️ You are viewing this coordination as an observer"
+              )
+            ) : (
+              "💡 Try: 'Order coffee', 'Schedule meeting', 'Book test drive', or 'Contact expert'"
+            )}
           </div>
         </div>
       </Card>

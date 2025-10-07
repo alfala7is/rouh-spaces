@@ -47,53 +47,31 @@ async function testChatFlow() {
     for (const query of testQueries) {
       console.log(`\n👤 User: "${query}"`);
 
-      const chatRes = await fetch(`${API_URL}/chat`, {
+      const blueprintRes = await fetch(`${API_URL}/spaces/${testSpace.id}/blueprints/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-space-id': testSpace.id,
-          'x-user-id': 'chat-test'
+          'x-user-id': 'chat-test',
+          'x-space-id': testSpace.id
         },
-        body: JSON.stringify({
-          message: query,
-          sessionId: 'test-session-' + Date.now()
-        })
+        body: JSON.stringify({ message: query })
       });
 
-      if (!chatRes.ok) {
-        const errorText = await chatRes.text();
+      if (!blueprintRes.ok) {
+        console.log(`  ⚠️  Blueprint chat failed: ${blueprintRes.status} - ${await blueprintRes.text()}`);
+        continue;
+      }
 
-        // Check if it's a 404 (endpoint doesn't exist)
-        if (chatRes.status === 404) {
-          console.log('  ℹ️  Chat endpoint not found, trying space test endpoint...');
+      const response = await blueprintRes.json();
+      console.log(`  🤖 Assistant: "${response.suggestedResponse?.text || response.text || 'No response'}"`);
 
-          // Try the test endpoint instead
-          const testRes = await fetch(`${API_URL}/spaces/${testSpace.id}/test`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-user-id': 'chat-test',
-              'x-space-id': testSpace.id
-            },
-            body: JSON.stringify({ message: query })
-          });
+      if (response.suggestedResponse?.blueprintMatches?.length) {
+        const names = response.suggestedResponse.blueprintMatches.map((m) => m.name).join(', ');
+        console.log(`  🧭 Blueprint matches: ${names}`);
+      }
 
-          if (testRes.ok) {
-            const response = await testRes.json();
-            console.log(`  🤖 Assistant: "${response.response || response.text || 'No response'}"`);
-          } else {
-            console.log(`  ⚠️  Response: ${testRes.status} - ${await testRes.text()}`);
-          }
-        } else {
-          console.log(`  ⚠️  Chat failed: ${chatRes.status} - ${errorText}`);
-        }
-      } else {
-        const response = await chatRes.json();
-        console.log(`  🤖 Assistant: "${response.response || response.text || 'No response'}"`);
-
-        if (response.actions && response.actions.length > 0) {
-          console.log(`  📋 Actions: ${response.actions.map(a => a.type).join(', ')}`);
-        }
+      if (response.suggestedResponse?.actions?.length) {
+        console.log(`  📋 Actions: ${response.suggestedResponse.actions.join(', ')}`);
       }
     }
 

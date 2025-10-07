@@ -302,57 +302,6 @@ export class SpacesService {
     };
   }
 
-  async testSpace(spaceId: string, message: string, systemPrompt?: string) {
-    try {
-      // If system prompt is provided, use direct chat without RAG
-      if (systemPrompt) {
-        const directResponse = await this.aiService.callAI('http://localhost:8000/chat/direct', {
-          message,
-          system_prompt: systemPrompt,
-        });
-
-        return {
-          response: directResponse.response,
-          text: directResponse.response,
-          model: directResponse.model,
-        };
-      }
-
-      // Otherwise, fall back to RAG (for backward compatibility)
-      const spaceContext = await this.prisma.withSpaceTx(spaceId, async (tx) => {
-        return await this.buildSpaceContext(spaceId, tx);
-      });
-
-      const ragResponse = await this.aiService.queryRAG({
-        space_id: spaceId,
-        query: message,
-        k: 3,
-        context: spaceContext,
-      });
-
-      return {
-        message: `Test message: "${message}"`,
-        response: ragResponse.answer,
-        text: ragResponse.answer,
-        suggestedResponse: {
-          text: ragResponse.answer,
-          citations: ragResponse.citations,
-        },
-      };
-    } catch (error) {
-      console.error('Failed to get AI response:', error);
-      // Fallback response
-      return {
-        response: "I understand you're looking for help. Let me connect you with someone who can assist.",
-        text: "I understand you're looking for help. Let me connect you with someone who can assist.",
-        suggestedResponse: {
-          text: "I understand you're looking for help. Let me connect you with someone who can assist.",
-          actions: ["Contact provider", "Browse FAQ", "Schedule consultation"],
-        },
-      };
-    }
-  }
-
   private async buildSpaceContext(spaceId: string, tx = this.prisma) {
     // Fetch complete space data with all relations
     const space = await tx.space.findUnique({
@@ -613,7 +562,7 @@ export class SpacesService {
       throw new Error('canonicalText is required');
     }
 
-    const title = (body.title || '').trim() || canonicalText.split(/[\.!?\n]/)[0].slice(0, 80) || 'Untitled knowledge';
+    const title = (body.title || '').trim() || canonicalText.split(/[.!?\n]/)[0].slice(0, 80) || 'Untitled knowledge';
 
     return this.prisma.withSpaceTx(spaceId, (tx) =>
       tx.spaceKnowledge.create({

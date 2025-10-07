@@ -1,9 +1,12 @@
 import os
 import logging
-from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, UploadFile, File
+import hashlib
+import time
+from collections import defaultdict
+from typing import Optional, List, Dict, Any, Tuple, Literal
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text, create_engine
 from openai import OpenAI
@@ -12,12 +15,408 @@ import base64
 import json
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     import PyPDF2
 except ImportError:
     PyPDF2 = None
     print("Warning: PyPDF2 not installed. PDF processing will be limited.")
+try:
+    import guardrails as gd
+    GUARDRAILS_AVAILABLE = True
+except ImportError:
+    gd = None
+    GUARDRAILS_AVAILABLE = False
+    print("Warning: Guardrails not installed. Template compilation will be limited.")
+
+from template_models import CoordinationTemplateModel
+
+
+def slugify_lower(identifier: str, fallback: str = "item") -> str:
+    cleaned = re.sub(r'[^a-z0-9]+', '_', identifier.lower()).strip('_')
+    return cleaned or fallback
+
+
+def normalize_compiled_template(template_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce loose LLM output into the expected template structure."""
+    data = template_json.copy()
+
+    if 'schemaJson' not in data and 'coordinationPattern' in data:
+        data['schemaJson'] = data.pop('coordinationPattern')
+
+    phases = ['express', 'explore', 'commit', 'evidence', 'confirm']
+    normalized_schema = {}
+    schema_source = data.get('schemaJson') or {}
+    for phase in phases:
+        phase_source = schema_source.get(phase, {}) if isinstance(schema_source, dict) else {}
+        base = {
+            'enabled': phase_source.get('enabled', True),
+            'description': phase_source.get('description'),
+            'timeout': phase_source.get('timeout'),
+        }
+        if phase == 'commit':
+            base['requireDeposit'] = phase_source.get('requireDeposit', False)
+        if phase == 'evidence':
+            base['requireProof'] = phase_source.get('requireProof', True)
+        if phase == 'confirm':
+            base['autoComplete'] = phase_source.get('autoComplete', False)
+        normalized_schema[phase] = base
+    data['schemaJson'] = normalized_schema
+
+    roles = data.get('roles', [])
+    role_lookup: Dict[str, str] = {}
+    normalized_roles = []
+    if isinstance(roles, dict):
+        roles_iterable = roles.items()
+    elif isinstance(roles, list):
+        roles_iterable = enumerate(roles)
+    else:
+        roles_iterable = []
+
+    for key, value in roles_iterable:
+        role_payload = value if isinstance(value, dict) else {'description': str(value)}
+        display_name = role_payload.get('name') or (key if isinstance(key, str) else f'role_{key}')
+        slug = slugify_lower(display_name, 'role')
+        role_lookup[display_name] = slug
+        if isinstance(key, str):
+            role_lookup[key] = slug
+        role_payload = role_payload.copy()
+        role_payload['name'] = slug
+        role_payload.setdefault('description', display_name.title())
+        role_payload.setdefault('minParticipants', 1)
+        role_payload.setdefault('capabilities', ['create'])
+        role_payload.setdefault('constraints', {})
+        normalized_roles.append(role_payload)
+
+    if not normalized_roles:
+        normalized_roles = [
+            {'name': 'requester', 'description': 'Primary requester', 'minParticipants': 1, 'capabilities': ['create', 'comment']},
+            {'name': 'provider', 'description': 'Responsible fulfiller', 'minParticipants': 1, 'capabilities': ['approve', 'complete']},
+        ]
+        role_lookup.update({'requester': 'requester', 'provider': 'provider'})
+
+    data['roles'] = normalized_roles
+
+    slots = data.get('slots', [])
+    normalized_slots = []
+    if isinstance(slots, dict):
+        slot_iterable = slots.items()
+    elif isinstance(slots, list):
+        slot_iterable = enumerate(slots)
+    else:
+        slot_iterable = []
+
+    for key, value in slot_iterable:
+        slot_payload = value if isinstance(value, dict) else {'type': 'text'}
+        slot_payload = slot_payload.copy()
+        slot_name = slot_payload.get('name') or (key if isinstance(key, str) else f'slot_{key}')
+        slot_slug = slugify_lower(slot_name, 'slot')
+        slot_payload['name'] = slot_slug
+        slot_payload.setdefault('type', slot_payload.get('fieldType', 'text'))
+        slot_payload.setdefault('description', slot_name.title())
+        slot_payload['visibility'] = [role_lookup.get(r, slugify_lower(r, 'role')) for r in slot_payload.get('visibility', [])]
+        slot_payload['editable'] = [role_lookup.get(r, slugify_lower(r, 'role')) for r in slot_payload.get('editable', [])]
+        normalized_slots.append(slot_payload)
+
+    data['slots'] = normalized_slots if normalized_slots else None
+
+    states = data.get('states', [])
+    normalized_states = []
+    if isinstance(states, dict):
+        state_iterable = states.items()
+    elif isinstance(states, list):
+        state_iterable = enumerate(states)
+    else:
+        state_iterable = []
+
+    for idx, value in state_iterable:
+        if isinstance(states, dict):
+            key = idx
+            state_payload = value
+        else:
+            key = None
+            state_payload = value
+        state_payload = state_payload if isinstance(state_payload, dict) else {}
+        state_payload = state_payload.copy()
+        display_name = state_payload.get('name') or (key if isinstance(key, str) else f'state_{idx}')
+        state_slug = slugify_lower(display_name, 'state')
+        state_payload['name'] = state_slug
+        state_payload.setdefault('type', state_payload.get('phase', 'collect'))
+        state_payload.setdefault('description', display_name.title())
+        allowed_roles = state_payload.get('allowedRoles', []) or state_payload.get('participants', [])
+        state_payload['allowedRoles'] = [role_lookup.get(r, slugify_lower(r, 'role')) for r in allowed_roles]
+        state_payload.setdefault('requiredSlots', [])
+        state_payload.setdefault('transitions', {})
+        state_payload['sequence'] = len(normalized_states)
+        normalized_states.append(state_payload)
+
+    if not normalized_states:
+        normalized_states = [
+            {'name': 'express_need', 'type': 'collect', 'description': 'Gather initial request', 'sequence': 0, 'requiredSlots': [], 'allowedRoles': [normalized_roles[0]['name']], 'transitions': {'always': 'explore_options'}},
+            {'name': 'explore_options', 'type': 'negotiate', 'description': 'Discuss options', 'sequence': 1, 'requiredSlots': [], 'allowedRoles': [normalized_roles[0]['name'], normalized_roles[-1]['name']], 'transitions': {'always': 'commit_agreement'}},
+            {'name': 'commit_agreement', 'type': 'commit', 'description': 'Confirm agreement', 'sequence': 2, 'requiredSlots': [], 'allowedRoles': [normalized_roles[-1]['name']], 'transitions': {'always': 'evidence_delivery'}},
+            {'name': 'evidence_delivery', 'type': 'evidence', 'description': 'Provide proof of completion', 'sequence': 3, 'requiredSlots': [], 'allowedRoles': [normalized_roles[-1]['name']], 'transitions': {'always': 'confirm_outcome'}},
+            {'name': 'confirm_outcome', 'type': 'signoff', 'description': 'Confirm success and close run', 'sequence': 4, 'requiredSlots': [], 'allowedRoles': [normalized_roles[0]['name']], 'transitions': {}},
+        ]
+
+    data['states'] = normalized_states
+
+    return data
+
+# Enhanced utility functions for template compilation
+def create_cache_key(description: str, space_context: Optional[Dict] = None) -> str:
+    """Create a unique cache key for template compilation requests"""
+    context_str = json.dumps(space_context, sort_keys=True) if space_context else ""
+    content = f"{description.lower().strip()}{context_str}"
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+def check_rate_limit(client_id: str) -> bool:
+    """Check if client has exceeded rate limits"""
+    current_time = time.time()
+    client_requests = request_history[client_id]
+
+    # Remove old requests outside the window
+    client_requests[:] = [req_time for req_time in client_requests
+                         if current_time - req_time < RATE_LIMIT_WINDOW]
+
+    if len(client_requests) >= RATE_LIMIT_REQUESTS:
+        return False
+
+    client_requests.append(current_time)
+    return True
+
+def calculate_quality_score(template: Dict, description: str, business_context: Optional[str] = None) -> Tuple[float, Dict[str, float]]:
+    """Calculate quality score for generated template with detailed breakdown"""
+    scores = {}
+
+    # Completeness score (0-1)
+    completeness_factors = [
+        bool(template.get('name')),
+        bool(template.get('description')),
+        bool(template.get('participants', [])),
+        bool(template.get('states', [])),
+        len(template.get('states', [])) >= 3,  # At least 3 states
+        len(template.get('participants', [])) >= 2,  # At least 2 participants
+        bool(template.get('coordinationPattern')),
+    ]
+    scores['completeness'] = sum(completeness_factors) / len(completeness_factors)
+
+    # Clarity score (0-1)
+    desc_length = len(template.get('description', ''))
+    name_length = len(template.get('name', ''))
+    has_clear_states = all(state.get('description') for state in template.get('states', []))
+
+    clarity_factors = [
+        min(desc_length / 100, 1.0),  # Description length (optimal ~100 chars)
+        min(name_length / 50, 1.0),   # Name length (optimal ~50 chars)
+        has_clear_states,
+        not any(word in template.get('description', '').lower() for word in ['todo', 'tbd', 'placeholder'])
+    ]
+    scores['clarity'] = sum(clarity_factors) / len(clarity_factors)
+
+    # Feasibility score (0-1)
+    state_count = len(template.get('states', []))
+    participant_count = len(template.get('participants', []))
+
+    feasibility_factors = [
+        0.8 if 2 <= state_count <= 8 else 0.4,  # Reasonable number of states
+        0.8 if 2 <= participant_count <= 6 else 0.4,  # Reasonable number of participants
+        not any(word in description.lower() for word in ['complex', 'complicated', 'advanced']),
+        len(description) < 1000,  # Not overly complex description
+    ]
+    scores['feasibility'] = sum(feasibility_factors) / len(feasibility_factors)
+
+    # Business relevance score (0-1)
+    business_terms = ['customer', 'service', 'order', 'request', 'approval', 'review', 'delivery']
+    has_business_terms = any(term in description.lower() for term in business_terms)
+
+    relevance_factors = [
+        has_business_terms,
+        bool(business_context),
+        'coordination' in template.get('description', '').lower(),
+        any(role.get('name', '').lower() in ['customer', 'provider', 'manager', 'reviewer']
+            for role in template.get('participants', [])),
+    ]
+    scores['business_relevance'] = sum(relevance_factors) / len(relevance_factors)
+
+    # Calculate weighted total
+    total_score = sum(scores[key] * QUALITY_WEIGHTS[key] for key in scores)
+
+    return total_score, scores
+
+def extract_patterns(description: str) -> Dict[str, Any]:
+    """Extract common patterns and keywords from description for analytics"""
+    patterns = {
+        'industry_keywords': [],
+        'process_type': 'general',
+        'complexity_indicators': [],
+        'participant_hints': [],
+    }
+
+    desc_lower = description.lower()
+
+    # Industry detection
+    industries = {
+        'restaurant': ['restaurant', 'food', 'dining', 'menu', 'kitchen'],
+        'retail': ['store', 'shopping', 'purchase', 'inventory', 'sales'],
+        'healthcare': ['patient', 'medical', 'health', 'appointment', 'treatment'],
+        'education': ['student', 'course', 'class', 'assignment', 'grade'],
+        'tech': ['software', 'development', 'code', 'deployment', 'testing'],
+    }
+
+    for industry, keywords in industries.items():
+        if any(keyword in desc_lower for keyword in keywords):
+            patterns['industry_keywords'].append(industry)
+
+    # Process type detection
+    if any(word in desc_lower for word in ['request', 'order', 'booking']):
+        patterns['process_type'] = 'request_fulfillment'
+    elif any(word in desc_lower for word in ['review', 'approval', 'feedback']):
+        patterns['process_type'] = 'review_approval'
+    elif any(word in desc_lower for word in ['event', 'meeting', 'gathering']):
+        patterns['process_type'] = 'event_coordination'
+
+    # Complexity indicators
+    complexity_words = ['complex', 'multiple', 'various', 'different', 'many']
+    patterns['complexity_indicators'] = [word for word in complexity_words if word in desc_lower]
+
+    # Participant hints
+    participant_words = ['customer', 'user', 'client', 'team', 'member', 'staff', 'manager']
+    patterns['participant_hints'] = [word for word in participant_words if word in desc_lower]
+
+    return patterns
+
+def generate_enhanced_system_prompt(business_context: Optional[str] = None, previous_patterns: Optional[Dict] = None) -> str:
+    """Generate an enhanced system prompt with context awareness"""
+
+    base_prompt = """You are an expert coordination template architect with deep understanding of business processes and workflow optimization. Your expertise spans multiple industries and you excel at creating practical, efficient coordination templates.
+
+CORE MISSION: Transform natural language descriptions into structured, actionable coordination templates that follow proven 5-state coordination patterns while being tailored to specific business needs.
+
+COORDINATION PATTERN MASTERY:
+1. EXPRESS: Participants articulate needs, proposals, or requirements (clear communication entry point)
+2. EXPLORE: Collaborative exploration of options, negotiation, and requirement refinement
+3. COMMIT: Formal agreements, commitments, and resource allocation decisions
+4. EVIDENCE: Delivery of work products, proof of completion, or milestone achievements
+5. CONFIRM: Final validation, satisfaction confirmation, and process closure
+
+TEMPLATE ARCHITECTURE PRINCIPLES:
+• Clarity: Every element must be immediately understandable to end users
+• Efficiency: Minimize unnecessary steps while maintaining process integrity
+• Flexibility: Support variations in scale, timing, and participant involvement
+• Accountability: Clear ownership and responsibility at each stage
+• Measurability: Enable progress tracking and outcome evaluation"""
+
+    if business_context:
+        base_prompt += f"\n\nBUSINESS CONTEXT INTEGRATION:\n{business_context}"
+
+    if previous_patterns:
+        industries = previous_patterns.get('industry_keywords', [])
+        process_types = previous_patterns.get('process_type', 'general')
+
+        if industries:
+            base_prompt += f"\n\nINDUSTRY EXPERTISE: Drawing from experience in {', '.join(industries)} sectors"
+
+        if process_types != 'general':
+            base_prompt += f"\nPROCESS SPECIALIZATION: Optimized for {process_types} workflows"
+
+    base_prompt += """
+
+TEMPLATE QUALITY STANDARDS:
+• Names should be descriptive yet concise (20-60 characters)
+• Descriptions should explain the business value and process flow (50-200 words)
+• Each state must have clear success criteria and exit conditions
+• Participant roles must map to real business functions
+• Data collection should serve genuine business needs
+• Timeouts should reflect realistic business cycles
+
+VALIDATION CHECKPOINTS:
+✓ Does this solve a real business problem?
+✓ Can a non-technical user understand and execute this?
+✓ Are the coordination states logical and sequential?
+✓ Do the participant roles have clear value-add functions?
+✓ Is the complexity appropriate for the described need?
+
+Generate templates that business teams will actually want to use and that deliver measurable coordination value."""
+
+    return base_prompt
+
+def enhance_template_with_metadata(template: Dict, quality_score: float, processing_time: float, patterns: Dict) -> Dict:
+    """Enhance generated template with metadata for better analytics and user experience"""
+
+    enhanced = template.copy()
+
+    # Add compilation metadata
+    enhanced['metadata'] = enhanced.get('metadata', {})
+    enhanced['metadata'].update({
+        'compilation': {
+            'quality_score': round(quality_score, 3),
+            'processing_time_ms': round(processing_time * 1000),
+            'compiled_at': datetime.utcnow().isoformat(),
+            'ai_version': '1.0-enhanced',
+        },
+        'analytics': {
+            'detected_industry': patterns.get('industry_keywords', []),
+            'process_type': patterns.get('process_type', 'general'),
+            'complexity_level': 'high' if len(patterns.get('complexity_indicators', [])) > 2 else 'medium' if len(patterns.get('complexity_indicators', [])) > 0 else 'low',
+            'participant_count': len(template.get('participants', [])),
+            'state_count': len(template.get('states', [])),
+        },
+        'recommendations': generate_recommendations(template, quality_score, patterns)
+    })
+
+    return enhanced
+
+def generate_recommendations(template: Dict, quality_score: float, patterns: Dict) -> List[str]:
+    """Generate actionable recommendations for template improvement"""
+    recommendations = []
+
+    if quality_score < 0.7:
+        recommendations.append("Consider adding more specific details to improve template clarity")
+
+    if len(template.get('participants', [])) < 2:
+        recommendations.append("Add at least one more participant role for better coordination")
+
+    if len(template.get('states', [])) < 3:
+        recommendations.append("Consider adding more workflow states for comprehensive process coverage")
+
+    if not patterns.get('participant_hints'):
+        recommendations.append("Specify clear participant roles (e.g., customer, provider, manager)")
+
+    complexity_level = len(patterns.get('complexity_indicators', []))
+    if complexity_level > 3:
+        recommendations.append("Consider simplifying the process to improve adoption and execution")
+    elif complexity_level == 0:
+        recommendations.append("Consider adding more detail to capture important process nuances")
+
+    if not template.get('coordinationPattern', {}).get('evidence', {}).get('enabled'):
+        recommendations.append("Consider enabling evidence collection for better process accountability")
+
+    return recommendations[:3]  # Limit to top 3 recommendations
+
+def update_compilation_stats(space_id: str, success: bool, processing_time: float, quality_score: Optional[float] = None, patterns: Optional[Dict] = None):
+    """Update compilation statistics for analytics"""
+    stats = compilation_stats[space_id]
+    stats['attempts'] += 1
+
+    if success:
+        stats['successes'] += 1
+        if quality_score:
+            stats['quality_scores'].append(quality_score)
+            stats['avg_confidence'] = sum(stats['quality_scores']) / len(stats['quality_scores'])
+    else:
+        stats['failures'] += 1
+
+    # Update average processing time
+    total_time = stats['avg_processing_time'] * (stats['attempts'] - 1) + processing_time
+    stats['avg_processing_time'] = total_time / stats['attempts']
+
+    # Track patterns
+    if patterns:
+        for industry in patterns.get('industry_keywords', []):
+            stats['common_patterns'][industry] += 1
+        if patterns.get('process_type'):
+            stats['common_patterns'][patterns['process_type']] += 1
 
 # Load environment variables from the root .env file
 load_dotenv(dotenv_path="../../.env")
@@ -31,7 +430,32 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localho
 SYNC_DB_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://")
 
 engine = create_engine(SYNC_DB_URL, echo=False)
-app = FastAPI(title="Rouh AI Service")
+app = FastAPI(title="Rouh AI Service - Enhanced Template Compilation")
+
+# Enhanced analytics and caching
+compilation_cache = {}
+compilation_stats = defaultdict(lambda: {
+    'attempts': 0,
+    'successes': 0,
+    'failures': 0,
+    'avg_processing_time': 0,
+    'avg_confidence': 0,
+    'quality_scores': [],
+    'common_patterns': defaultdict(int)
+})
+
+# Rate limiting
+request_history = defaultdict(list)
+RATE_LIMIT_REQUESTS = 10
+RATE_LIMIT_WINDOW = 300  # 5 minutes
+
+# Quality scoring parameters
+QUALITY_WEIGHTS = {
+    'completeness': 0.3,
+    'clarity': 0.25,
+    'feasibility': 0.25,
+    'business_relevance': 0.2
+}
 
 # Add CORS middleware to allow browser requests
 app.add_middleware(
@@ -1283,6 +1707,308 @@ class ConversationAnalysisRequest(BaseModel):
   conversation: List[Dict[str, Any]]  # Array of {role: str, content: str, timestamp: str}
   space_context: Optional[Dict[str, Any]] = None
 
+class TemplateCompilationRequest(BaseModel):
+  description: str
+  space_context: Optional[SpaceContext] = None
+
+class TemplateCompilationResponse(BaseModel):
+  valid: bool
+  template: Optional[Dict[str, Any]] = None
+  errors: Optional[List[str]] = None
+  rawOutput: Optional[str] = None
+  confidence: Optional[float] = None
+
+
+class DesignerMessage(BaseModel):
+  role: Literal['user', 'assistant', 'system']
+  content: str
+
+
+class DesignerGraphNode(BaseModel):
+  id: str
+  label: str
+  type: Literal['identity', 'state', 'slot', 'policy', 'signal', 'automation']
+  description: Optional[str] = None
+  meta: Optional[Dict[str, Any]] = None
+
+
+class DesignerGraphEdge(BaseModel):
+  id: str
+  source: str
+  target: str
+  label: Optional[str] = None
+  meta: Optional[Dict[str, Any]] = None
+
+
+class DesignerTurnRequest(BaseModel):
+  space_id: Optional[str] = None
+  history: List[DesignerMessage] = Field(default_factory=list)
+  notes: Optional[Dict[str, Any]] = None
+  graph: Optional[Dict[str, Any]] = None
+
+
+class DesignerTurnResponse(BaseModel):
+  reply: str
+  summary: Optional[str] = None
+  notes: Dict[str, Any] = Field(default_factory=dict)
+  graph: Dict[str, Any] = Field(default_factory=dict)
+  ready: bool = False
+  followUps: List[str] = Field(default_factory=list)
+
+
+async def fallback_llm_compilation(request: TemplateCompilationRequest, system_prompt: str) -> TemplateCompilationResponse:
+  """Fallback LLM generation without Guardrails"""
+  logger.info("Using direct LLM generation fallback...")
+  try:
+    completion = client.chat.completions.create(
+      model="gpt-4o-mini",
+      messages=[
+        {"role": "system", "content": system_prompt + "\n\nRespond with valid JSON matching the CoordinationTemplate schema."},
+        {"role": "user", "content": f"Create a coordination template for: {request.description}"}
+      ],
+      temperature=0.3,
+      max_tokens=2000
+    )
+
+    raw_output = completion.choices[0].message.content
+    logger.info("Direct LLM generation completed")
+
+    # Try to parse and validate the JSON output
+    try:
+      # Clean the output first - remove any markdown code blocks
+      cleaned_output = raw_output
+      if "```json" in cleaned_output:
+        cleaned_output = cleaned_output.split("```json")[1].split("```")[0]
+      elif "```" in cleaned_output:
+        cleaned_output = cleaned_output.split("```")[1].split("```")[0]
+
+      # Extract JSON from the response using greedy match to get full JSON
+      json_match = re.search(r'\{.*\}', cleaned_output, re.DOTALL)
+      if not json_match:
+        # If no JSON found, try the original output
+        json_match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+
+      if json_match:
+        template_json = json.loads(json_match.group())
+        normalized_template = normalize_compiled_template(template_json)
+
+        # Validate with Pydantic model
+        validated_template = CoordinationTemplateModel(**normalized_template)
+        template_data = validated_template.model_dump()
+
+        logger.info("Direct LLM output validated successfully")
+        return TemplateCompilationResponse(
+          valid=True,
+          template=template_data,
+          confidence=0.7,
+          rawOutput=raw_output
+        )
+      else:
+        logger.warning("No JSON found in LLM response")
+        return TemplateCompilationResponse(
+          valid=False,
+          errors=["No valid JSON template found in response"],
+          rawOutput=raw_output,
+          confidence=0.2
+        )
+
+    except (json.JSONDecodeError, ValueError) as parse_error:
+      logger.error(f"Failed to parse LLM output: {parse_error}")
+      return TemplateCompilationResponse(
+        valid=False,
+        errors=[f"Invalid JSON in response: {str(parse_error)}"],
+        rawOutput=raw_output,
+        confidence=0.1
+      )
+
+  except Exception as fallback_error:
+    logger.error(f"Fallback LLM generation failed: {fallback_error}")
+    raise HTTPException(status_code=500, detail=f"Template compilation failed: {str(fallback_error)}")
+
+
+def merge_entity_lists(existing: Any, incoming: Any, key: str = 'id') -> List[Dict[str, Any]]:
+  existing_list = existing if isinstance(existing, list) else []
+  incoming_list = incoming if isinstance(incoming, list) else []
+  merged: Dict[str, Dict[str, Any]] = {}
+
+  for item in existing_list:
+    if isinstance(item, dict) and key in item:
+      merged[str(item[key])] = item
+
+  for item in incoming_list:
+    if isinstance(item, dict) and key in item:
+      merged[str(item[key])] = item
+
+  return list(merged.values())
+
+
+def merge_notes(existing: Optional[Dict[str, Any]], incoming: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+  base: Dict[str, Any] = existing.copy() if isinstance(existing, dict) else {}
+  updates = incoming or {}
+
+  for key, value in updates.items():
+    if value in (None, '', [], {}):
+      continue
+    if isinstance(value, list):
+      base[key] = merge_entity_lists(base.get(key), value)
+    elif isinstance(value, dict):
+      nested_existing = base.get(key) if isinstance(base.get(key), dict) else {}
+      merged_nested = merge_notes(nested_existing, value)
+      base[key] = merged_nested
+    else:
+      base[key] = value
+
+  return base
+
+
+def merge_graph(existing: Optional[Dict[str, Any]], incoming: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+  existing_graph = existing if isinstance(existing, dict) else {}
+  incoming_graph = incoming if isinstance(incoming, dict) else {}
+
+  nodes = merge_entity_lists(existing_graph.get('nodes'), incoming_graph.get('nodes'))
+  edges = merge_entity_lists(existing_graph.get('edges'), incoming_graph.get('edges'))
+
+  graph: Dict[str, Any] = {
+    'nodes': nodes,
+    'edges': edges,
+  }
+
+  # Preserve any other metadata keys from incoming graph
+  for key, value in incoming_graph.items():
+    if key not in graph:
+      graph[key] = value
+
+  return graph
+
+
+def build_designer_system_prompt(existing_notes: Optional[Dict[str, Any]], existing_graph: Optional[Dict[str, Any]]) -> str:
+  notes_json = json.dumps(existing_notes or {}, ensure_ascii=False, indent=2)
+  graph_json = json.dumps(existing_graph or {}, ensure_ascii=False, indent=2)
+
+  schema_description = (
+    '{\n'
+    '  "reply": "Assistant response in natural language",\n'
+    '  "summary": "Concise blueprint summary for compilation",\n'
+    '  "notes": {\n'
+    '    "goal": "string",\n'
+    '    "identities": [{"id": "string", "name": "string", "persona": "optional", "description": "optional"}],\n'
+    '    "states": [{"id": "string", "name": "string", "category": "express|explore|commit|evidence|confirm|other", "description": "optional"}],\n'
+    '    "guardrails": [{"id": "string", "rule": "string", "trigger": "optional"}],\n'
+    '    "signals": [{"id": "string", "name": "string", "type": "optional", "description": "optional"}],\n'
+    '    "automations": [{"id": "string", "name": "string", "mode": "suggest|assist|auto", "description": "optional"}],\n'
+    '    "success": "string"\n'
+    '  },\n'
+    '  "graph": {\n'
+    '    "nodes": [{"id": "string", "label": "string", "type": "identity|state|slot|policy|signal|automation", "description": "optional", "meta": { }}],\n'
+    '    "edges": [{"id": "string", "source": "string", "target": "string", "label": "optional"}]\n'
+    '  },\n'
+    '  "ready": true or false,\n'
+    '  "followUps": ["string"]\n'
+    '}'
+  )
+
+  return (
+    "You are Rouh Studio's blueprint designer. Collaborate with the user to model a coordination blueprint. "
+    "Maintain context, ask clarifying questions only when necessary, and translate their plain language "
+    "into structured coordination notes and a graph of identities, states, and supporting elements.\n\n"
+    "Existing structured notes (JSON):\n"
+    f"{notes_json}\n\n"
+    "Existing graph (JSON):\n"
+    f"{graph_json}\n\n"
+    "Respond strictly with a single JSON object following this schema:\n"
+    f"{schema_description}\n\n"
+    "Guidelines:\n"
+    "- Update fields incrementally; preserve useful information that already exists.\n"
+    "- Always include the latest summary reflecting the current blueprint.\n"
+    "- Generate stable IDs using lowercase slug-like tokens (e.g., therapy_session, warmup_checkin).\n"
+    "- In the graph, reuse node IDs for existing entities to avoid duplicates.\n"
+    "- Add edges to illustrate progression between states or key relationships.\n"
+    "- Set ready=true only when the blueprint has a clear goal, participants, at least two states, and success criteria.\n"
+    "- Use followUps to list the next helpful questions if the design is not ready.\n"
+    "- Never include markdown code fences or explanatory text outside the JSON object."
+  )
+
+
+async def generate_designer_turn(request: DesignerTurnRequest) -> DesignerTurnResponse:
+  if not client:
+    raise HTTPException(status_code=503, detail="OpenAI client not initialized")
+
+  try:
+    existing_notes = request.notes or {}
+    existing_graph = request.graph or {}
+
+    system_prompt = build_designer_system_prompt(existing_notes, existing_graph)
+
+    chat_messages: List[Dict[str, str]] = [
+      {"role": "system", "content": system_prompt}
+    ]
+
+    if request.history:
+      for message in request.history:
+        role = message.role if message.role in ('user', 'assistant') else 'user'
+        chat_messages.append({"role": role, "content": message.content})
+    else:
+      chat_messages.append({
+        "role": "user",
+        "content": "We're starting a new blueprint design session. Greet the user and ask them to describe the coordination they need."
+      })
+
+    completion = client.chat.completions.create(
+      model="gpt-4o-mini",
+      messages=chat_messages,
+      temperature=0.4,
+      max_tokens=1600
+    )
+
+    raw_output = completion.choices[0].message.content.strip()
+
+    cleaned_output = raw_output
+    if cleaned_output and cleaned_output.startswith("```"):
+      cleaned_output = cleaned_output.split('```', 2)[1] if '```' in cleaned_output else cleaned_output
+
+    json_match = re.search(r'\{.*\}', cleaned_output, re.DOTALL) if cleaned_output else None
+    if not json_match and raw_output:
+      json_match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+
+    if not json_match:
+      logger.warning('No JSON payload returned by LLM; falling back to plain-text reply')
+      fallback_reply = raw_output or "I'm still processing your request—could you share more detail?"
+      fallback_summary = existing_notes.get('summary') or existing_notes.get('goal')
+      return DesignerTurnResponse(
+        reply=fallback_reply,
+        summary=fallback_summary,
+        notes=existing_notes,
+        graph=merge_graph(existing_graph, None),
+        ready=False,
+        followUps=[
+          'Could you restate the coordination goal with more detail so I can structure it?',
+        ] if request.history else []
+      )
+
+    payload = json.loads(json_match.group())
+
+    merged_notes = merge_notes(existing_notes, payload.get('notes'))
+    merged_graph = merge_graph(existing_graph, payload.get('graph'))
+
+    reply_text = payload.get('reply') or "I'm still processing your request. Could you share more about what you need coordinated?"
+    summary_text = payload.get('summary') or merged_notes.get('summary') or merged_notes.get('goal')
+    ready_flag = bool(payload.get('ready', False))
+    follow_ups = payload.get('followUps') if isinstance(payload.get('followUps'), list) else []
+
+    return DesignerTurnResponse(
+      reply=reply_text,
+      summary=summary_text,
+      notes=merged_notes,
+      graph=merged_graph,
+      ready=ready_flag,
+      followUps=follow_ups
+    )
+
+  except HTTPException:
+    raise
+  except Exception as error:
+    logger.error(f"Designer turn generation failed: {error}")
+    raise HTTPException(status_code=500, detail=f"Designer turn failed: {error}")
 
 @app.post("/analyze-training")
 async def analyze_training_conversation(request: ConversationAnalysisRequest):
@@ -1413,3 +2139,125 @@ Produce strictly valid JSON and do not include any commentary outside the JSON p
     if "insufficient_quota" in error_msg or "exceeded your current quota" in error_msg:
       raise HTTPException(status_code=402, detail="OpenAI API quota exceeded. Please check your billing.")
     raise HTTPException(status_code=500, detail=f"Failed to analyze training conversation: {error_msg}")
+
+
+@app.post("/designer/turn")
+async def designer_turn(request: DesignerTurnRequest):
+  """Proxy a conversational turn for the blueprint designer."""
+  return await generate_designer_turn(request)
+
+@app.post("/compile-template", response_model=TemplateCompilationResponse)
+async def compile_template(request: TemplateCompilationRequest):
+  """Compile a coordination template from natural language description using Guardrails"""
+  if not client:
+    raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+
+  try:
+    logger.info(f"Starting template compilation for description: {request.description[:100]}...")
+
+    # Build context-aware system prompt
+    business_context = ""
+    if request.space_context:
+      space = request.space_context.space
+      profile = request.space_context.profile
+      business_name = profile.businessName if profile else space.name
+      business_type = space.category or "business"
+
+      business_context = f"""
+Business Context:
+- Name: {business_name}
+- Type: {business_type}
+- Description: {space.description or "No description provided"}
+"""
+
+    # Create comprehensive system prompt for template generation
+    system_prompt = f"""You are an expert at creating coordination templates for collaborative processes. Your task is to convert natural language descriptions into structured coordination templates that follow the 5-state pattern: Express → Explore → Commit → Evidence → Confirm.
+
+{business_context}
+
+COORDINATION PATTERN EXPLANATION:
+1. EXPRESS: Participants express their needs, proposals, or requirements
+2. EXPLORE: Participants explore options, negotiate terms, and discuss details
+3. COMMIT: Participants make firm commitments and agreements
+4. EVIDENCE: Participants provide proof, deliverables, or evidence of completion
+5. CONFIRM: Participants confirm satisfaction and close the coordination
+
+TEMPLATE STRUCTURE REQUIREMENTS:
+- Template must have a clear name and description
+- Each coordination phase can be enabled/disabled with custom descriptions and timeouts
+- Roles define who can participate with specific capabilities and constraints
+- States define the workflow steps with transitions and requirements
+- Slots define data fields that participants fill during the process
+
+EXAMPLE SCENARIOS:
+- Service Request: Customer expresses need → Explore providers → Commit to agreement → Provider shows evidence → Customer confirms
+- Group Purchase: Organizer expresses opportunity → Explore interest → Commit to buy → Receive evidence → Confirm delivery
+- Event Planning: Host expresses event idea → Explore details → Commit to plan → Execute event → Confirm success
+
+Generate a complete, realistic template based on the user's description. Make it specific to their needs while following coordination best practices."""
+
+    # Try Guardrails first if available
+    if GUARDRAILS_AVAILABLE:
+      try:
+        guard = gd.Guard.from_pydantic(
+          output_class=CoordinationTemplateModel,
+          prompt=system_prompt,
+          num_reasks=3
+        )
+        logger.info("Guardrails guard created successfully")
+
+        # Generate template with Guardrails validation
+        logger.info("Starting LLM generation with Guardrails validation...")
+        result = guard(
+          llm_api=client.chat.completions.create,
+          prompt_params={},
+          model="gpt-4o-mini",
+          max_tokens=2000,
+          temperature=0.3,
+          messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Create a coordination template for: {request.description}"}
+          ]
+        )
+
+        logger.info("Guardrails generation completed")
+
+        # Extract validated output
+        if result.validation_passed:
+          template_data = result.validated_output.model_dump() if hasattr(result.validated_output, 'model_dump') else result.validated_output
+          logger.info("Template validation passed")
+
+          return TemplateCompilationResponse(
+            valid=True,
+            template=template_data,
+            confidence=0.9,
+            rawOutput=str(result.raw_llm_output) if hasattr(result, 'raw_llm_output') else None
+          )
+        else:
+          error_messages = []
+          if hasattr(result, 'error') and result.error:
+            error_messages.append(str(result.error))
+          if hasattr(result, 'validation_history'):
+            for validation in result.validation_history:
+              if hasattr(validation, 'error_message'):
+                error_messages.append(validation.error_message)
+
+          logger.warning(f"Guardrails validation failed, falling back to direct LLM: {error_messages}")
+          # Fall through to fallback
+
+      except Exception as guard_error:
+        logger.error(f"Guardrails execution failed, falling back to direct LLM: {guard_error}")
+        # Fall through to fallback
+
+    # Use fallback LLM for both "Guardrails not available" and "Guardrails failed" cases
+    return await fallback_llm_compilation(request, system_prompt)
+
+  except HTTPException:
+    raise
+  except Exception as e:
+    error_msg = str(e)
+    logger.error(f"Template compilation error: {error_msg}")
+
+    if "insufficient_quota" in error_msg or "exceeded your current quota" in error_msg:
+      raise HTTPException(status_code=402, detail="OpenAI API quota exceeded. Please check your billing.")
+    raise HTTPException(status_code=500, detail=f"Template compilation failed: {error_msg}")
